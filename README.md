@@ -26,5 +26,6 @@ pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.scop
 ## Docs
 
 - [NIGHTFALL.md](./NIGHTFALL.md) — source of truth (architecture, persona, plan).
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — branching, PR flow, commit style, CI rules.
 - [AUTHORIZATION.md](./AUTHORIZATION.md) — scope policy and safety.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — architecture overview.
