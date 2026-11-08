@@ -1,0 +1,10 @@
+target: "http://localhost:3000/"
+objective: "Reach the admin dashboard"
+allow:
+  hosts: ["localhost"]
+  paths: ["/"]
+deny:
+  paths: ["/logout"]
+budgetUsd: 5
+maxSteps: 40
+credentials: []
