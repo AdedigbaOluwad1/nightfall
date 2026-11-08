@@ -41,8 +41,31 @@ export class BrowserSession implements Session {
     const page = await this.ensure();
     const d = this.gate.check(cred.loginUrl);
     if (!d.allowed) throw new Error(`login URL out of scope: ${d.reason}`);
-    await page.goto(cred.loginUrl);
-    // TODO(R1): fill the real login form fields + submit; wait for auth state.
+    await page.goto(cred.loginUrl, { waitUntil: "domcontentloaded" });
+
+    // JS-driven login: fill the first identity + password fields and submit.
+    // Heuristic selectors so this generalises past any one lab's markup.
+    const pass = page.locator('input[type="password"]').first();
+    await pass.waitFor({ state: "visible", timeout: 10_000 });
+    const identity = page
+      .locator('input[type="email"], input[type="text"], input:not([type])')
+      .first();
+    await identity.fill(cred.username);
+    await pass.fill(cred.password);
+
+    const submit = page
+      .locator(
+        'button[type="submit"], input[type="submit"], #loginButton, button:has-text("Log in"), button:has-text("Login")',
+      )
+      .first();
+    if (await submit.count()) {
+      await submit.click();
+    } else {
+      await pass.press("Enter");
+    }
+
+    // Settle without letting a missing navigation throw.
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
     bus.emit("session.login", { boundary: this.boundary, tier: 2 });
   }
 
@@ -56,9 +79,16 @@ export class BrowserSession implements Session {
     };
   }
 
-  /** TODO(R1): screenshot(path) helper for XSS-execution evidence. */
+  /** Capture the current rendered page — XSS-execution evidence for the report. */
+  async screenshot(path: string): Promise<string | undefined> {
+    if (!this.page) return undefined;
+    await this.page.screenshot({ path, fullPage: true });
+    return path;
+  }
 
   async dispose(): Promise<void> {
     await this.browser?.close();
+    this.browser = undefined;
+    this.page = undefined;
   }
 }
