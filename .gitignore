@@ -6,3 +6,5 @@ dist/
 .env.local
 evidence/*.jsonl
 runs/
+
+ROLE_R1_agent_core.md
