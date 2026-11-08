@@ -1,0 +1,5 @@
+[
+  { "lab": "juice-shop", "component": "OWASP Juice Shop", "version": "20.3.0" },
+  { "lab": "dvwa", "component": "DVWA", "version": "1.10" },
+  { "lab": "webgoat", "component": "WebGoat", "version": "2026.5" }
+]
