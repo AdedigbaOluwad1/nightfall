@@ -5,6 +5,6 @@ import type { Finding } from "./models.js";
 export class EvidenceStore {
   constructor(private readonly path: string) {}
   record(finding: Finding) {
-    appendFileSync(this.path, JSON.stringify(finding) + "\n");
+    appendFileSync(this.path, `${JSON.stringify(finding)}\n`);
   }
 }

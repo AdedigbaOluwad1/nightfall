@@ -13,7 +13,7 @@ const tag = {
 };
 
 export function attachRenderer(): void {
-  bus.on("run.start", (e) => console.log(pc.bold("nightfall ▸") + ` run ${e.runId} → ${e.target}`));
+  bus.on("run.start", (e) => console.log(`${pc.bold("nightfall ▸")} run ${e.runId} → ${e.target}`));
   bus.on("scope.loaded", (e) =>
     console.log(
       "  " +
@@ -22,7 +22,7 @@ export function attachRenderer(): void {
     ),
   );
   bus.on("scope.blocked", (e) =>
-    console.log("  " + tag.scope(`⚠ scope`) + `  blocked ${e.url} — ${e.reason}`),
+    console.log(`  ${tag.scope(`⚠ scope`)}  blocked ${e.url} — ${e.reason}`),
   );
   bus.on("recon.found", (e) =>
     console.log(
@@ -33,14 +33,12 @@ export function attachRenderer(): void {
     ),
   );
   bus.on("tavily.cve", (e) =>
-    console.log("  " + tag.tavily(`▸ tavily`) + `  ${e.component} ${e.version} → ${e.cve}`),
+    console.log(`  ${tag.tavily(`▸ tavily`)}  ${e.component} ${e.version} → ${e.cve}`),
   );
   bus.on("exploit.attempt", (e) =>
-    console.log("  " + tag.exploit(`▸ exploit`) + `  #${e.n} ${e.technique}`),
+    console.log(`  ${tag.exploit(`▸ exploit`)}  #${e.n} ${e.technique}`),
   );
-  bus.on("exploit.interpret", (e) =>
-    console.log("    └ " + e.decision.toUpperCase() + ` · ${e.note}`),
-  );
+  bus.on("exploit.interpret", (e) => console.log(`    └ ${e.decision.toUpperCase()} · ${e.note}`));
   bus.on("gateway.call", (e) =>
     console.log(
       "  " +
@@ -49,7 +47,7 @@ export function attachRenderer(): void {
     ),
   );
   bus.on("finding.confirmed", (e) =>
-    console.log("  " + tag.finding(`✓ finding`) + `  ${e.title} · ${e.severity}`),
+    console.log(`  ${tag.finding(`✓ finding`)}  ${e.title} · ${e.severity}`),
   );
   bus.on("objective.reached", (e) =>
     console.log(
