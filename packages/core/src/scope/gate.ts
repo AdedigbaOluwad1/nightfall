@@ -10,6 +10,8 @@ export interface GateDecision {
  * - No LLM/model call may ever be added here.
  * - A request is allowed only if its host is in allow.hosts AND its path
  *   matches an allow prefix AND matches no deny prefix.
+ * - Encoded path separators are refused outright (see below), because they can
+ *   hide traversal from WHATWG normalization and escape the allow prefix.
  * Out-of-scope access is an automatic challenge failure, so this errs closed.
  */
 export class ScopeGate {
@@ -29,6 +31,16 @@ export class ScopeGate {
     }
 
     const path = url.pathname;
+
+    // Encoded separators defeat WHATWG dot-segment normalization: a server that
+    // percent-decodes the path could escape the allow prefix (e.g.
+    // `/app/..%2fadmin` -> `/app/../admin` -> `/admin`). Deny-by-default means
+    // we refuse any path carrying an encoded `.`, `/`, `\`, or `%` (the
+    // double-encoding vector) rather than trying to decode it cleverly.
+    if (/%(?:2e|2f|5c|25)/i.test(path)) {
+      return { allowed: false, reason: `path ${path} contains an encoded separator` };
+    }
+
     for (const denied of this.scope.deny.paths) {
       if (path.startsWith(denied)) {
         return { allowed: false, reason: `path ${path} matches deny ${denied}` };
