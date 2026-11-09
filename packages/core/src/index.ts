@@ -12,6 +12,11 @@ export {
   runAblation,
 } from "./hypothesis/ablation.js";
 export {
+  type PrecisionOptions,
+  type PrecisionScore,
+  precisionAtK,
+} from "./hypothesis/precision.js";
+export {
   type Candidate,
   groundedLookup,
   setHypothesisGateway,
