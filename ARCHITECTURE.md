@@ -9,4 +9,15 @@ behind one `Session` interface so the loop never cares which tier is live. The e
 is the backbone: every module emits typed events, and the CLI, web view, and evidence
 store are sinks.
 
-See the PRD diagram for the full data flow.
+**Scope safety.** The gate is deliberately outside the LLM — pure, deterministic,
+deny-by-default, and it refuses encoded path-traversal so an escaped prefix can't
+leak. See [AUTHORIZATION.md](./AUTHORIZATION.md).
+
+**Evidence & report.** Evidence is captured as it happens into an append-only JSONL
+log (`evidence/store.ts`) — the durable source of truth the report reads back, by
+merging each request/response pair into the finding it supports. The report generator
+(`report/`) emits a client-ready document: markdown is canonical (zero dependencies),
+with HTML (`toHtml`, via `marked`) and PDF (`toPdf`, via an opt-in puppeteer) layered
+on top. Every finding carries evidence, CVSS severity, and remediation.
+
+See [NIGHTFALL.md](./NIGHTFALL.md) for the full data-flow diagram and the win thesis.

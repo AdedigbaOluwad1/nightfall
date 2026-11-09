@@ -6,3 +6,6 @@ dist/
 .env.local
 evidence/*.jsonl
 runs/
+
+# Claude Code delivered-file mirror (not part of the repo)
+Claude outputs/
