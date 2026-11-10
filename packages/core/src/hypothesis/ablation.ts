@@ -29,34 +29,34 @@ export interface AblationRow {
 
 const verifyCache = new Map<string, boolean>();
 
-async function verifyCitation(cve: string, component: string, version: string): Promise<boolean> {
-  const key = `${cve}|${component}|${version}`;
+function componentNeedle(component: string): string {
+  return component
+    .toLowerCase()
+    .replace(/^(owasp|the)\s+/, "")
+    .trim();
+}
+
+async function verifyCitation(cve: string, component: string): Promise<boolean> {
+  const key = `${cve}|${component}`;
   const cached = verifyCache.get(key);
   if (cached !== undefined) return cached;
   const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY ?? "" });
-  const res = await tvly.search(`${cve} ${component} affected versions`, { maxResults: 3 });
+  const res = await tvly.search(`${cve} vulnerability`, { maxResults: 5 });
   const corpus = (res.results ?? [])
     .map((r) => `${r.title ?? ""} ${r.content ?? ""}`)
     .join(" ")
     .toLowerCase();
-  const applies =
-    corpus.includes(cve.toLowerCase()) &&
-    corpus.includes(component.toLowerCase()) &&
-    corpus.includes(version.toLowerCase());
+  const applies = corpus.includes(cve.toLowerCase()) && corpus.includes(componentNeedle(component));
   verifyCache.set(key, applies);
   return applies;
 }
 
-async function score(
-  candidates: Candidate[],
-  component: string,
-  version: string,
-): Promise<ConditionScore> {
+async function score(candidates: Candidate[], component: string): Promise<ConditionScore> {
   const cited = candidates.filter((c) => c.cve);
   let validCitations = 0;
   let freshCitations = 0;
   for (const c of cited) {
-    if (c.cve && (await verifyCitation(c.cve, component, version))) validCitations += 1;
+    if (c.cve && (await verifyCitation(c.cve, component))) validCitations += 1;
     if (c.freshAfterCutoff) freshCitations += 1;
   }
   const withCve = cited.length;
@@ -77,21 +77,26 @@ export async function runAblation(frozen: FrozenTarget[]): Promise<AblationRow[]
     const ungrounded = await ungroundedLookup(target.component, target.version);
     rows.push({
       target,
-      grounded: await score(grounded, target.component, target.version),
-      ungrounded: await score(ungrounded, target.component, target.version),
+      grounded: await score(grounded, target.component),
+      ungrounded: await score(ungrounded, target.component),
       raw: { grounded, ungrounded },
     });
   }
   return rows;
 }
 
+function cell(value: string, width: number): string {
+  return value.length >= width ? `${value.slice(0, width - 1)} ` : value.padEnd(width);
+}
+
 export function formatAblationTable(rows: AblationRow[]): string {
   const header =
-    "lab".padEnd(14) +
-    "component".padEnd(18) +
-    "cond".padEnd(12) +
-    "cites".padEnd(7) +
-    "valid".padEnd(7) +
+    cell("lab", 14) +
+    cell("component", 26) +
+    cell("cond", 12) +
+    cell("cand", 6) +
+    cell("cites", 7) +
+    cell("valid", 7) +
     "fresh";
   const lines = [header];
   for (const row of rows) {
@@ -100,11 +105,12 @@ export function formatAblationTable(rows: AblationRow[]): string {
       ["ungrounded", row.ungrounded],
     ] as const) {
       lines.push(
-        row.target.lab.padEnd(14) +
-          `${row.target.component} ${row.target.version}`.padEnd(18) +
-          cond.padEnd(12) +
-          String(s.withCve).padEnd(7) +
-          `${(s.citationValidity * 100).toFixed(0)}%`.padEnd(7) +
+        cell(row.target.lab, 14) +
+          cell(`${row.target.component} ${row.target.version}`, 26) +
+          cell(cond, 12) +
+          cell(String(s.candidates), 6) +
+          cell(String(s.withCve), 7) +
+          cell(`${(s.citationValidity * 100).toFixed(0)}%`, 7) +
           `${(s.freshnessRate * 100).toFixed(0)}%`,
       );
     }
