@@ -1,0 +1,5 @@
+[
+  { "lab": "ref-log4j", "component": "Apache Log4j", "version": "2.14.1" },
+  { "lab": "ref-confluence", "component": "Atlassian Confluence", "version": "7.13.0" },
+  { "lab": "ref-struts", "component": "Apache Struts", "version": "2.3.31" }
+]
