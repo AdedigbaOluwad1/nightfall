@@ -9,7 +9,10 @@ import { modelForStep } from "./routing.js";
 function cacheHeaders(model: string, prompt: string): Record<string, string> {
   if (process.env.NF_CACHE_ENABLED === "false") return {};
   const key = createHash("sha256").update(`${model}\n${prompt}`).digest("hex");
-  const headers: Record<string, string> = { "x-bf-cache-key": key };
+  const headers: Record<string, string> = {
+    "x-bf-cache-key": key,
+    "x-bf-cache-type": process.env.NF_CACHE_TYPE ?? "direct",
+  };
   if (process.env.NF_CACHE_TTL) headers["x-bf-cache-ttl"] = process.env.NF_CACHE_TTL;
   if (process.env.NF_CACHE_THRESHOLD)
     headers["x-bf-cache-threshold"] = process.env.NF_CACHE_THRESHOLD;

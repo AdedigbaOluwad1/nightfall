@@ -13,6 +13,7 @@ import {
   runAblation,
   runLoop,
   ScopeGate,
+  type StepType,
   setHypothesisGateway,
   ungroundedLookup,
 } from "@nightfall/core";
@@ -104,6 +105,52 @@ program
     console.log(
       "\nsupporting metric (noisy) — headline is citation-validity + freshness via ablate\n",
     );
+  });
+
+program
+  .command("cache-demo")
+  .description(
+    "prove the Bifrost cache is load-bearing: identical prompt twice → 2nd is a hit at $0",
+  )
+  .option(
+    "--prompt <text>",
+    "prompt sent twice",
+    "List three common web application vulnerabilities as a JSON array of strings.",
+  )
+  .option("--step <step>", "routing step: classify | exploit_reason | report_write", "classify")
+  .action(async (opts) => {
+    attachRenderer();
+    const step = opts.step as StepType;
+    const gateway = new Gateway(new Budget(Number(process.env.NF_BUDGET_USD ?? "1")));
+    const calls: { costUsd: number; cacheHit: boolean }[] = [];
+    bus.on("gateway.call", (e) => {
+      calls.push({ costUsd: e.costUsd, cacheHit: e.cacheHit });
+    });
+
+    console.log("\ncall 1 — identical prompt, cold:");
+    await gateway.complete(step, opts.prompt);
+    console.log("call 2 — identical prompt, warm:");
+    await gateway.complete(step, opts.prompt);
+
+    const first = calls[0];
+    const second = calls[1];
+    if (!first || !second) {
+      console.log("\nwarning: expected two gateway.call events — cache demo inconclusive");
+      return;
+    }
+    console.log(
+      `\ncache: call1 $${first.costUsd.toFixed(4)} (${first.cacheHit ? "HIT" : "miss"})` +
+        ` → call2 $${second.costUsd.toFixed(4)} (${second.cacheHit ? "HIT" : "miss"})`,
+    );
+    if (second.cacheHit) {
+      console.log(
+        `cache is load-bearing: 2nd identical call served from cache at $0 (saved $${first.costUsd.toFixed(4)})`,
+      );
+    } else {
+      console.log(
+        "no cache hit — enable the Bifrost cache plugin and keep NF_CACHE_ENABLED unset/true (see tracker).",
+      );
+    }
   });
 
 program.parseAsync(process.argv.filter((arg) => arg !== "--"));
