@@ -1,3 +1,5 @@
+import { catalogPriceFor } from "./catalog.js";
+
 export interface ModelPrice {
   inPerMillion: number;
   outPerMillion: number;
@@ -6,6 +8,13 @@ export interface ModelPrice {
 export interface TokenUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
+}
+
+export type PriceSource = "override" | "catalog" | "table" | "estimate";
+
+export interface CostResult {
+  costUsd: number;
+  source: PriceSource;
 }
 
 const DEFAULT_PRICES: Record<string, ModelPrice> = {
@@ -38,9 +47,32 @@ export function priceFor(model: string): ModelPrice {
   return overrides()[model] ?? DEFAULT_PRICES[model] ?? fallbackPrice();
 }
 
-export function computeCost(model: string, usage: TokenUsage | undefined): number {
-  const price = priceFor(model);
+function costOf(price: ModelPrice, usage: TokenUsage | undefined): number {
   const inTokens = usage?.prompt_tokens ?? 0;
   const outTokens = usage?.completion_tokens ?? 0;
   return (inTokens / 1e6) * price.inPerMillion + (outTokens / 1e6) * price.outPerMillion;
+}
+
+export function computeCost(model: string, usage: TokenUsage | undefined): number {
+  return costOf(priceFor(model), usage);
+}
+
+export async function resolvePrice(
+  model: string,
+): Promise<{ price: ModelPrice; source: PriceSource }> {
+  const override = overrides()[model];
+  if (override) return { price: override, source: "override" };
+  const catalog = await catalogPriceFor(model);
+  if (catalog) return { price: catalog, source: "catalog" };
+  const table = DEFAULT_PRICES[model];
+  if (table) return { price: table, source: "table" };
+  return { price: fallbackPrice(), source: "estimate" };
+}
+
+export async function computeCostLive(
+  model: string,
+  usage: TokenUsage | undefined,
+): Promise<CostResult> {
+  const { price, source } = await resolvePrice(model);
+  return { costUsd: costOf(price, usage), source };
 }

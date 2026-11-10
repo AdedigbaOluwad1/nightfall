@@ -4,7 +4,14 @@ export { Finding } from "./evidence/models.js";
 export { EvidenceStore } from "./evidence/store.js";
 export { Gateway } from "./gateway/bifrostClient.js";
 export { Budget, BudgetExceededError } from "./gateway/budget.js";
-export { computeCost, priceFor } from "./gateway/pricing.js";
+export {
+  type CostResult,
+  computeCost,
+  computeCostLive,
+  type PriceSource,
+  priceFor,
+  resolvePrice,
+} from "./gateway/pricing.js";
 export {
   type AblationRow,
   type FrozenTarget,
