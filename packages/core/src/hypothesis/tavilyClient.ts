@@ -90,15 +90,47 @@ function buildPrompt(component: string, version: string, advisories?: Advisory[]
   );
 }
 
-function parseCandidates(raw: string, advisories?: Advisory[]): Candidate[] {
+function salvageObjects(body: string): unknown[] {
+  const objects: unknown[] = [];
+  let depth = 0;
+  let objStart = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        try {
+          objects.push(JSON.parse(body.slice(objStart, i + 1)));
+        } catch {}
+        objStart = -1;
+      }
+    }
+  }
+  return objects;
+}
+
+export function parseCandidates(raw: string, advisories?: Advisory[]): Candidate[] {
   const start = raw.indexOf("[");
+  if (start === -1) return [];
   const end = raw.lastIndexOf("]");
-  if (start === -1 || end === -1 || end < start) return [];
   let parsed: unknown;
   try {
+    if (end <= start) throw new Error("unterminated array");
     parsed = JSON.parse(raw.slice(start, end + 1));
   } catch {
-    return [];
+    parsed = salvageObjects(raw.slice(start));
   }
   if (!Array.isArray(parsed)) return [];
   const byCve = new Map(advisories?.map((a) => [a.cve, a.url]));

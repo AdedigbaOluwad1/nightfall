@@ -6,11 +6,16 @@ import {
   type FrozenTarget,
   formatAblationTable,
   Gateway,
+  groundedLookup,
   loadScope,
+  type PrecisionScore,
+  precisionAtK,
   runAblation,
   runLoop,
   ScopeGate,
+  type StepType,
   setHypothesisGateway,
+  ungroundedLookup,
 } from "@nightfall/core";
 import { Command } from "commander";
 import { loadEnv } from "./env.js";
@@ -57,6 +62,94 @@ program
       const out = fromCwd(opts.out);
       writeFileSync(out, JSON.stringify(rows, null, 2));
       console.log(`raw logs → ${out}`);
+    }
+  });
+
+program
+  .command("precision")
+  .description(
+    "precision@k: do grounded vs ungrounded candidates reach confirmed findings (supporting)",
+  )
+  .requiredOption("--scope <path>", "path to scope.yaml for the live lab")
+  .requiredOption("--component <name>", "fingerprinted component")
+  .requiredOption("--version <ver>", "fingerprinted version")
+  .option("--k <n>", "top-k candidates to score", "3")
+  .option("--repeats <n>", "repeats per candidate for variance control", "3")
+  .action(async (opts) => {
+    attachRenderer();
+    if (!process.env.NF_SEED) {
+      console.warn(
+        "warning: NF_SEED unset — precision@k is run-to-run noisy without a pinned seed",
+      );
+    }
+    const scope = loadScope(fromCwd(opts.scope));
+    const gate = new ScopeGate(scope);
+    const gateway = new Gateway(new Budget(scope.budgetUsd));
+    setHypothesisGateway(gateway);
+    const k = Number(opts.k);
+    const repeats = Number(opts.repeats);
+
+    const grounded = await groundedLookup(opts.component, opts.version);
+    const ungrounded = await ungroundedLookup(opts.component, opts.version);
+    const pg = await precisionAtK(scope, gate, gateway, grounded, { k, repeats });
+    const pu = await precisionAtK(scope, gate, gateway, ungrounded, { k, repeats });
+
+    const row = (label: string, s: PrecisionScore) =>
+      label.padEnd(12) +
+      String(s.attributed).padEnd(11) +
+      String(s.trials).padEnd(8) +
+      `${(s.precisionAtK * 100).toFixed(0)}%`;
+    console.log(`\ncond        attributed trials  p@${k}`);
+    console.log(row("grounded", pg));
+    console.log(row("ungrounded", pu));
+    console.log(
+      "\nsupporting metric (noisy) — headline is citation-validity + freshness via ablate\n",
+    );
+  });
+
+program
+  .command("cache-demo")
+  .description(
+    "prove the Bifrost cache is load-bearing: identical prompt twice → 2nd is a hit at $0",
+  )
+  .option(
+    "--prompt <text>",
+    "prompt sent twice",
+    "List three common web application vulnerabilities as a JSON array of strings.",
+  )
+  .option("--step <step>", "routing step: classify | exploit_reason | report_write", "classify")
+  .action(async (opts) => {
+    attachRenderer();
+    const step = opts.step as StepType;
+    const gateway = new Gateway(new Budget(Number(process.env.NF_BUDGET_USD ?? "1")));
+    const calls: { costUsd: number; cacheHit: boolean }[] = [];
+    bus.on("gateway.call", (e) => {
+      calls.push({ costUsd: e.costUsd, cacheHit: e.cacheHit });
+    });
+
+    console.log("\ncall 1 — identical prompt, cold:");
+    await gateway.complete(step, opts.prompt);
+    console.log("call 2 — identical prompt, warm:");
+    await gateway.complete(step, opts.prompt);
+
+    const first = calls[0];
+    const second = calls[1];
+    if (!first || !second) {
+      console.log("\nwarning: expected two gateway.call events — cache demo inconclusive");
+      return;
+    }
+    console.log(
+      `\ncache: call1 $${first.costUsd.toFixed(4)} (${first.cacheHit ? "HIT" : "miss"})` +
+        ` → call2 $${second.costUsd.toFixed(4)} (${second.cacheHit ? "HIT" : "miss"})`,
+    );
+    if (second.cacheHit) {
+      console.log(
+        `cache is load-bearing: 2nd identical call served from cache at $0 (saved $${first.costUsd.toFixed(4)})`,
+      );
+    } else {
+      console.log(
+        "no cache hit — enable the Bifrost cache plugin and keep NF_CACHE_ENABLED unset/true (see tracker).",
+      );
     }
   });
 

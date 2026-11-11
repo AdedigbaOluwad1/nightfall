@@ -22,7 +22,13 @@ export interface NightfallEvents {
   "hypothesis.ranked": { candidates: number; grounded: boolean };
   "exploit.attempt": { technique: string; target: string; n: number };
   "exploit.interpret": { decision: "retry" | "escalate" | "abandon" | "pivot"; note: string };
-  "gateway.call": { step: StepType; model: string; costUsd: number; cacheHit: boolean };
+  "gateway.call": {
+    step: StepType;
+    model: string;
+    costUsd: number;
+    cacheHit: boolean;
+    priceSource?: "override" | "catalog" | "table" | "estimate";
+  };
   "session.login": { boundary: string; tier: 1 | 2 };
   "finding.confirmed": { id: string; title: string; severity: Severity };
   "objective.reached": { via: string; steps: number; costUsd: number };
