@@ -40,14 +40,14 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/example.targets.js
 
 ## The six beats (3:00 total)
 
-| # | ~Time | Beat | On screen | Say (one line) |
-|---|-------|------|-----------|----------------|
-| 1 | 0:00–0:25 | **Hands off** | Scope file, then `run` launches; you fold your arms | "We hand it a scope file and a target, hit go — and step back. No human at the keyboard from here." |
-| 2 | 0:25–1:05 | **It decides** | Live trace: an attempt fails → interpret → pivot → recover | "Watch it read a failed attempt, decide to pivot, and recover on its own. That's the whole challenge — it has never seen this target." |
-| 3 | 1:05–1:40 | **Tavily caused the finding** | `tavily.cve` event → a recent CVE (post-cutoff) → the exploit it drove | "This CVE was published after the model's training cutoff. It couldn't have known it — Tavily pulled it live, and it's what led to the exploit." |
-| 4 | 1:40–2:10 | **Bifrost receipts** | Cost/run, a cache hit, the budget cap halting a runaway loop | "Every call routes through Bifrost: real cost per step, a cache hit here, and — on a deliberately runaway loop — the budget cap halting it live." |
-| 5 | 2:10–2:35 | **The gate refuses** | Out-of-scope target → `scope.blocked`; or the green adversarial suite | "Point it out of scope and it refuses — deny-by-default. We attacked this gate ourselves, including encoded path-traversal; every case is denied." |
-| 6 | 2:35–3:00 | **The payoff** | Open the client-ready report: findings, evidence, CVSS, remediation | "And here's what a client gets: findings with evidence, CVSS severity, and remediation — not a JSON dump." |
+| #   | ~Time     | Beat                          | On screen                                                              | Say (one line)                                                                                                                                     |
+| --- | --------- | ----------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 0:00–0:25 | **Hands off**                 | Scope file, then `run` launches; you fold your arms                    | "We hand it a scope file and a target, hit go — and step back. No human at the keyboard from here."                                                |
+| 2   | 0:25–1:05 | **It decides**                | Live trace: an attempt fails → interpret → pivot → recover             | "Watch it read a failed attempt, decide to pivot, and recover on its own. That's the whole challenge — it has never seen this target."             |
+| 3   | 1:05–1:40 | **Tavily caused the finding** | `tavily.cve` event → a recent CVE (post-cutoff) → the exploit it drove | "This CVE was published after the model's training cutoff. It couldn't have known it — Tavily pulled it live, and it's what led to the exploit."   |
+| 4   | 1:40–2:10 | **Bifrost receipts**          | Cost/run, a cache hit, the budget cap halting a runaway loop           | "Every call routes through Bifrost: real cost per step, a cache hit here, and — on a deliberately runaway loop — the budget cap halting it live."  |
+| 5   | 2:10–2:35 | **The gate refuses**          | Out-of-scope target → `scope.blocked`; or the green adversarial suite  | "Point it out of scope and it refuses — deny-by-default. We attacked this gate ourselves, including encoded path-traversal; every case is denied." |
+| 6   | 2:35–3:00 | **The payoff**                | Open the client-ready report: findings, evidence, CVSS, remediation    | "And here's what a client gets: findings with evidence, CVSS severity, and remediation — not a JSON dump."                                         |
 
 **Closing slide (after 3:00):** the ablation before/after — citation-validity and
 freshness, grounded vs. ungrounded, on a recent-CVE target. One line: "We don't

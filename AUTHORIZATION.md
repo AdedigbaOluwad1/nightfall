@@ -37,4 +37,4 @@ Everything else is denied. Properties that make this trustworthy:
 ## Out of scope = hard failure
 
 Any out-of-scope access is treated as a hard failure, not a warning. The design
-goal is that Nightfall can *prove* it stays in bounds.
+goal is that Nightfall can _prove_ it stays in bounds.
