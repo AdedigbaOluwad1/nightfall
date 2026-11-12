@@ -1,0 +1,12 @@
+[
+  { "label": "in-scope REST API", "url": "http://localhost:3000/rest/products/search?q=apple", "expect": "allow" },
+  { "label": "in-scope API", "url": "http://localhost:3000/api/Users", "expect": "allow" },
+  { "label": "denied admin surface", "url": "http://localhost:3000/rest/admin/application-configuration", "expect": "block" },
+  { "label": "prefix-boundary sibling (/rest vs /restaurant)", "url": "http://localhost:3000/restaurant", "expect": "block" },
+  { "label": "path traversal escape", "url": "http://localhost:3000/rest/../admin", "expect": "block" },
+  { "label": "percent-encoded traversal", "url": "http://localhost:3000/rest/%2e%2e/admin", "expect": "block" },
+  { "label": "out-of-scope host", "url": "http://evil.com/rest", "expect": "block" },
+  { "label": "userinfo host confusion", "url": "http://localhost:3000@evil.com/rest/products", "expect": "block" },
+  { "label": "IP literal vs allowed hostname", "url": "http://127.0.0.1:3000/rest", "expect": "block" },
+  { "label": "unlisted surface (deny-by-default)", "url": "http://localhost:3000/internal", "expect": "block" }
+]

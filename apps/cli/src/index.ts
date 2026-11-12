@@ -22,6 +22,7 @@ import {
   ungroundedLookup,
 } from "@nightfall/core";
 import { Command } from "commander";
+import pc from "picocolors";
 import { loadEnv } from "./env.js";
 import { attachRenderer } from "./render.js";
 
@@ -29,6 +30,12 @@ loadEnv();
 
 function fromCwd(path: string): string {
   return resolve(process.env.INIT_CWD ?? process.cwd(), path);
+}
+
+interface GateProbe {
+  label?: string;
+  url: string;
+  expect?: "allow" | "block";
 }
 
 const program = new Command();
@@ -68,6 +75,55 @@ program
     const reportPath = `${evidencePath.replace(/\.jsonl$/, "")}.report.md`;
     writeFileSync(reportPath, report);
     console.log(`\nreport → ${reportPath}`);
+  });
+
+program
+  .command("scope-check")
+  .description("prove the deny-by-default scope gate refuses adversarial out-of-scope requests")
+  .requiredOption("--scope <path>", "path to scope.yaml")
+  .option("--probes <path>", "JSON array of { label?, url, expect? } probes")
+  .option("--url <u>", "extra URL to probe (repeatable)", (u: string, acc: string[]) => {
+    acc.push(u);
+    return acc;
+  }, [] as string[])
+  .action((opts) => {
+    const scope = loadScope(fromCwd(opts.scope));
+    const gate = new ScopeGate(scope);
+    const probes: GateProbe[] = [];
+    if (opts.probes) {
+      probes.push(...(JSON.parse(readFileSync(fromCwd(opts.probes), "utf8")) as GateProbe[]));
+    }
+    for (const u of opts.url as string[]) probes.push({ url: u });
+    if (probes.length === 0) {
+      console.error("no probes — pass --probes <json> and/or --url <u>");
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(
+      `\nscope gate — deny-by-default · host(s): ${scope.allow.hosts.join(", ")}` +
+        ` · allow: ${scope.allow.paths.join(", ")} · deny: ${scope.deny.paths.join(", ") || "(none)"}\n`,
+    );
+    let mismatches = 0;
+    let checked = 0;
+    for (const p of probes) {
+      const d = gate.check(p.url);
+      let mark = " ";
+      if (p.expect) {
+        checked += 1;
+        const ok = (p.expect === "allow") === d.allowed;
+        if (!ok) mismatches += 1;
+        mark = ok ? pc.green("✓") : pc.red("✗");
+      }
+      const verdict = d.allowed ? pc.green("ALLOW") : pc.yellow("BLOCK");
+      console.log(`${mark} ${verdict}  ${(p.label ?? "").padEnd(40)} ${p.url}  — ${d.reason}`);
+    }
+    if (checked > 0 && mismatches === 0) {
+      console.log(`\n${pc.green(`${checked}/${checked}`)} probes behaved as scoped — deny-by-default holds.\n`);
+    } else if (checked > 0) {
+      console.log(`\n${pc.red(`${mismatches} of ${checked}`)} probes did NOT behave as scoped — gate regression.\n`);
+      process.exitCode = 1;
+    }
   });
 
 program

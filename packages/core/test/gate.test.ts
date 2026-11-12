@@ -26,6 +26,34 @@ describe("ScopeGate — deny by default", () => {
   it("blocks an unparseable URL", () => {
     expect(gate.check("not a url").allowed).toBe(false);
   });
-  // TODO(R3): add adversarial cases — encoded hosts, path traversal (/app/../admin),
-  // case tricks, userinfo@host confusion, SSRF-style redirects.
+});
+
+describe("ScopeGate — adversarial inputs a judge will try", () => {
+  it("does not leak a sibling path that merely shares a string prefix", () => {
+    // /app is in scope; /apple and /app-secret are NOT, despite startsWith.
+    expect(gate.check("http://localhost:3000/apple").allowed).toBe(false);
+    expect(gate.check("http://localhost:3000/app-secret").allowed).toBe(false);
+    // The real in-scope boundaries still pass.
+    expect(gate.check("http://localhost:3000/app").allowed).toBe(true);
+    expect(gate.check("http://localhost:3000/app/x").allowed).toBe(true);
+  });
+
+  it("blocks path traversal that escapes the allow prefix", () => {
+    expect(gate.check("http://localhost:3000/app/../admin").allowed).toBe(false);
+    expect(gate.check("http://localhost:3000/app/%2e%2e/admin").allowed).toBe(false);
+  });
+
+  it("blocks userinfo host confusion (…@evil.com)", () => {
+    expect(gate.check("http://localhost:3000@evil.com/app").allowed).toBe(false);
+  });
+
+  it("blocks an IP literal when only the hostname is in scope", () => {
+    expect(gate.check("http://127.0.0.1:3000/app").allowed).toBe(false);
+  });
+
+  it("does not over-deny a sibling of a denied path", () => {
+    // deny is /app/admin/delete; /app/admin/delete-ish is a different path.
+    expect(gate.check("http://localhost:3000/app/admin/delete").allowed).toBe(false);
+    expect(gate.check("http://localhost:3000/app/admin/deletion").allowed).toBe(true);
+  });
 });
