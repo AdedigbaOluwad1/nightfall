@@ -73,7 +73,7 @@ Each 03 requirement, the feature that satisfies it, and how we _prove_ it to a j
 
 | 03 requirement                                    | Our feature                                        | Proof a judge sees                                                             |
 | ------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Enumerate only authorized surface with real tools | Scope gate + recon wrapping httpx/nuclei/ffuf/nmap | Recon log shows only in-scope targets; every request passed the gate           |
+| Enumerate only authorized surface with real tools | Scope gate + in-scope crawler with header/cookie/body fingerprinting; optional `httpx` tech-detect enrichment | Recon log shows only in-scope targets; every request passed the gate           |
 | Interpret output, choose next actions, recover    | Stateful decide/recover loop                       | Live trace: a failed attempt, a pivot, a recovery — autonomously               |
 | Complete the objective, incl. multi-step          | Objective tracker; loop runs to objective or cap   | Agent reaches the planted objective on an unfamiliar lab                       |
 | Respect scope strictly (out-of-scope = auto-fail) | Hard-coded deny-by-default gate, no LLM inside     | Live: agent refuses an out-of-scope target; audit log shows zero leakage       |
@@ -81,6 +81,15 @@ Each 03 requirement, the feature that satisfies it, and how we _prove_ it to a j
 | Meaningful Bifrost use                            | Gateway: routing, budget cap, cache, logs          | On screen: cost/run, cache hit, budget cap halting a runaway loop              |
 | Meaningful Tavily use                             | Live CVE/advisory grounding + the ablation         | A Tavily-sourced CVE causes a finding; measured grounded-vs-ungrounded numbers |
 | Safety & authorization docs                       | AUTHORIZATION.md + scope-enforcement design        | Present, clear, deny-by-default explained                                      |
+
+> **This table is the target map, not a status report.** For the honest, current
+> state of each row — what is live-proven, what is code-proven, and what is still
+> blocked — see `PRE_SUBMISSION.md`. As of 2026-11-12: the scope-gate refusal (row 4,
+> `scope-check` beat), the client-ready Markdown report (row 5 — PDF is a stretch),
+> real Bifrost cost + a visible budget-cap halt (row 6 — the cache hit is code-proven
+> but blocked on this Bifrost deployment), and the measured Tavily ablation (row 7)
+> are done. Still open: a Tavily-sourced CVE _causing_ a live finding (row 7, quota-
+> blocked) and recon's `httpx`/`nmap` enrichment is best-effort/optional, not core.
 
 ---
 
@@ -255,7 +264,7 @@ TypeScript end to end (team-native; recon shells out to the same CLI binaries, s
 | Validation             | zod (scope file, events, tool output, LLM structured outputs — part of the safety story) |
 | Config                 | yaml                                                                                     |
 | Event bus              | emittery                                                                                 |
-| Process spawn          | execa (httpx, nmap, ffuf, nuclei)                                                        |
+| Process spawn          | execa (httpx tech-detect; optional nmap via NF_RECON_NMAP). ffuf/nuclei are not wired.   |
 | HTTP / crawl           | native fetch + cheerio                                                                   |
 | Models (Bifrost)       | `openai` SDK → Bifrost base URL                                                          |
 | Live research (Tavily) | `@tavily/core`                                                                           |
