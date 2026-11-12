@@ -130,6 +130,11 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         announceBudget("hypothesis");
         break;
       }
+      // Grounding degraded (model 429, Tavily error, transport): surface it so
+      // the trace is honest about running weaker, never silently. The loop
+      // still proceeds on its generic probes rather than crashing.
+      const reason = err instanceof Error ? err.message : String(err);
+      bus.emit("hypothesis.failed", { component: fp.component, version: fp.version, reason });
     }
     for (const c of candidates) {
       queue.push({ technique: c.technique, url: probeUrl, tier: 1, retries: 0, cve: c.cve });

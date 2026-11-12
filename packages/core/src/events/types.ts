@@ -22,6 +22,7 @@ export interface NightfallEvents {
     freshAfterCutoff?: boolean;
   };
   "hypothesis.ranked": { candidates: number; grounded: boolean };
+  "hypothesis.failed": { component: string; version: string; reason: string };
   "exploit.attempt": { technique: string; target: string; n: number };
   "exploit.interpret": { decision: "retry" | "escalate" | "abandon" | "pivot"; note: string };
   "gateway.call": {

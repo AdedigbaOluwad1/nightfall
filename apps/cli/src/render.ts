@@ -35,6 +35,13 @@ export function attachRenderer(): void {
   bus.on("tavily.cve", (e) =>
     console.log(`  ${tag.tavily(`▸ tavily`)}  ${e.component} ${e.version} → ${e.cve}`),
   );
+  bus.on("hypothesis.failed", (e) =>
+    console.log(
+      "  " +
+        pc.yellow("⚠ grounding") +
+        `  ${e.component} ${e.version} — degraded, running ungrounded · ${e.reason}`,
+    ),
+  );
   bus.on("exploit.attempt", (e) =>
     console.log(`  ${tag.exploit(`▸ exploit`)}  #${e.n} ${e.technique}`),
   );
