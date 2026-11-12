@@ -1,3 +1,4 @@
+import type { Severity } from "../events/types.js";
 import type { Session, SessionRequest, SessionResponse } from "../session/index.js";
 
 export interface AttemptResult {
@@ -99,6 +100,81 @@ function classify(technique: string): Kind {
   )
     return "bac";
   return "fallback";
+}
+
+/** Severity, CVSS, and remediation for a confirmed finding of a given class. */
+export interface FindingProfile {
+  severity: Severity;
+  cvss: string;
+  cvssScore: number;
+  remediation: string;
+}
+
+const PROFILES: Record<Kind, FindingProfile> = {
+  sqli: {
+    severity: "critical",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    cvssScore: 9.8,
+    remediation:
+      "Use parameterized queries or prepared statements for every database access and never concatenate untrusted input into SQL. Add allow-list input validation and run the application under a least-privilege database account.",
+  },
+  xss: {
+    severity: "high",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N",
+    cvssScore: 7.4,
+    remediation:
+      "Context-encode all untrusted output and rely on the framework's auto-escaping, serve a strict Content-Security-Policy, and treat any raw-HTML sink as a mandatory review gate.",
+  },
+  csrf: {
+    severity: "medium",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N",
+    cvssScore: 5.4,
+    remediation:
+      "Set SameSite=Lax or Strict on session cookies, require a per-session anti-CSRF token on every state-changing request, and verify the Origin or Referer header server-side.",
+  },
+  traversal: {
+    severity: "high",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    cvssScore: 7.5,
+    remediation:
+      "Canonicalize paths and confine file access to an allow-listed base directory, reject directory-traversal sequences after normalization, and never hand user input to filesystem APIs directly.",
+  },
+  cmdi: {
+    severity: "critical",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    cvssScore: 9.8,
+    remediation:
+      "Never pass user input to a shell; invoke processes with an argument array and no shell interpolation, apply strict allow-list validation, and run with least privilege.",
+  },
+  bac: {
+    severity: "high",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    cvssScore: 7.5,
+    remediation:
+      "Enforce server-side authorization on every request against the authenticated principal, deny by default, and never rely on unlinked or obscure URLs for protection.",
+  },
+  fallback: {
+    severity: "medium",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+    cvssScore: 5.3,
+    remediation:
+      "Manually confirm this exposure, verify server-side authorization and input handling on the affected surface, and add a regression test that keeps it closed.",
+  },
+};
+
+/**
+ * Map a confirmed attempt onto a client-ready finding profile: a severity and
+ * CVSS vector argued from the vulnerability class, plus concrete remediation.
+ * This is what turns a raw `ok: true` into something a consultant would sign —
+ * never a hard-coded "high". A cited CVE appends a patch directive.
+ */
+export function findingProfile(technique: string, cve?: string): FindingProfile {
+  const base = PROFILES[classify(technique)];
+  if (!cve) return base;
+  return {
+    ...base,
+    remediation: `${base.remediation} Patch the affected component to a fixed release that resolves ${cve}.`,
+  };
 }
 
 // --- shared transport layer ------------------------------------------------

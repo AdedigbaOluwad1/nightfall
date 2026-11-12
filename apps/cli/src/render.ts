@@ -46,6 +46,13 @@ export function attachRenderer(): void {
         `  ${e.step} → ${e.model} · $${e.costUsd.toFixed(4)} · ${e.cacheHit ? "cache HIT" : "miss"}`,
     ),
   );
+  bus.on("budget.exceeded", (e) =>
+    console.log(
+      "  " +
+        pc.bold(pc.red("⛔ budget")) +
+        `  cap $${e.capUsd.toFixed(2)} reached (spent $${e.spentUsd.toFixed(4)}) · halting the ${e.stage} loop`,
+    ),
+  );
   bus.on("finding.confirmed", (e) =>
     console.log(`  ${tag.finding(`✓ finding`)}  ${e.title} · ${e.severity}`),
   );
@@ -59,7 +66,8 @@ export function attachRenderer(): void {
   bus.on("run.end", (e) =>
     console.log(
       pc.bold("nightfall ▸") +
-        ` done · ${e.findings} finding(s) · ${e.blocked} blocked · $${e.costUsd.toFixed(2)}`,
+        ` done · ${e.findings} finding(s) · ${e.blocked} blocked · $${e.costUsd.toFixed(2)}` +
+        (e.haltedBy ? ` · halted: ${e.haltedBy}` : ""),
     ),
   );
 }

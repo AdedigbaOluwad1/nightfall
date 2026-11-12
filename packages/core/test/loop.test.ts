@@ -87,7 +87,12 @@ describe("runLoop — the decide/recover loop", () => {
     expect(state.findings).toBe(0);
   });
 
-  it("halts when the budget cap is reached before spending steps", async () => {
+  it("halts when the budget cap is reached, and announces it as a visible beat", async () => {
+    const halts: { capUsd: number; spentUsd: number; stage: string }[] = [];
+    bus.on("budget.exceeded", (e) => {
+      halts.push(e);
+    });
+
     const state = await runLoop(
       scope,
       gate,
@@ -114,5 +119,32 @@ describe("runLoop — the decide/recover loop", () => {
 
     expect(state.costUsd).toBeGreaterThanOrEqual(scope.budgetUsd);
     expect(state.steps).toBe(0);
+    expect(state.haltedBy).toBe("budget");
+    expect(halts).toHaveLength(1); // announced exactly once, not per guard
+    expect(halts[0]?.capUsd).toBe(scope.budgetUsd);
+    expect(halts[0]?.spentUsd).toBeGreaterThanOrEqual(scope.budgetUsd);
+  });
+
+  it("records the halt reason on a clean objective reach and an exhausted queue", async () => {
+    const reached = await runLoop(
+      scope,
+      gate,
+      gateway,
+      baseDeps({
+        attempt: async () => ({ ok: true, note: "admin reached", applicable: true }),
+      }),
+    );
+    expect(reached.haltedBy).toBe("objective");
+
+    const drained = await runLoop(
+      scope,
+      gate,
+      gateway,
+      baseDeps({
+        attempt: async () => ({ ok: false, note: "n/a", applicable: false }),
+      }),
+    );
+    expect(drained.objectiveReached).toBe(false);
+    expect(drained.haltedBy).toBe("exhausted");
   });
 });

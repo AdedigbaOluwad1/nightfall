@@ -11,6 +11,8 @@ export const Finding = z.object({
   id: z.string(),
   title: z.string(),
   severity: Severity,
+  cvss: z.string().default(""),
+  cvssScore: z.number().optional(),
   evidence: z.array(Evidence),
   remediation: z.string().default(""),
 });
