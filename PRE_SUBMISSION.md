@@ -237,7 +237,18 @@ the "and here's why that wasn't luck" evidence.
 
 ---
 
-## TASK 6 — The projected web view. [status: MISSING] — owner: R3
+## TASK 6 — The projected web view. [status: BUILT] — owner: R3
+
+> **Update 2026-11-12.** Built. The CLI's new `serve` command runs the loop and
+> forwards every typed event over a WebSocket (with a replayed backlog so a late view
+> still sees the whole run); `apps/web` is a vite + react app that subscribes and
+> renders the trace plus Bifrost/Tavily/scope/run receipts gauges — a thin sink on the
+> same event stream, no duplicated logic. Verified end-to-end: it typechecks and
+> vite-builds, and a ws client received the full run stream from `serve`. Caveat: the
+> **rendered pixels weren't visually confirmed in this session** (no browser) — run
+> `serve` + `pnpm --filter @nightfall/web dev` and open `localhost:5317` to eyeball it.
+> Still behind the spirit of §1 (reliability over spectacle): it's a view on a run that
+> completes, not a dashboard hiding a flaky agent.
 
 `NIGHTFALL.md §2.5` + the rubric: the run should stream as something a judge _watches_,
 not a hopeful terminal scroll. `apps/web/` is currently a **single README** that
