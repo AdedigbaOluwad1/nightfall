@@ -88,9 +88,6 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   const primary = deps.session;
   await primary.login().catch(() => undefined); // an unauthenticated session is still valid
 
-  // The budget cap is a live, visible stop — not a silent break. We announce it
-  // exactly once, tagged with the stage it bit in, so a judge watching the trace
-  // sees Bifrost's per-run cap halt a runaway loop.
   let budgetAnnounced = false;
   const announceBudget = (stage: "hypothesis" | "attempt"): void => {
     if (budgetAnnounced) return;
@@ -131,9 +128,6 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         announceBudget("hypothesis");
         break;
       }
-      // Grounding degraded (model 429, Tavily error, transport): surface it so
-      // the trace is honest about running weaker, never silently. The loop
-      // still proceeds on its generic probes rather than crashing.
       const reason = err instanceof Error ? err.message : String(err);
       bus.emit("hypothesis.failed", { component: fp.component, version: fp.version, reason });
     }
@@ -154,10 +148,10 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   try {
     while (queue.length > 0 && !state.objectiveReached) {
       if (state.steps >= state.maxSteps) {
-        if (!state.haltedBy) state.haltedBy = "steps"; // step cap halts a stuck run
+        if (!state.haltedBy) state.haltedBy = "steps";
         break;
       }
-      if (overBudget("attempt")) break; // budget cap halts, visibly
+      if (overBudget("attempt")) break;
 
       const item = queue.shift();
       if (!item) break;
@@ -229,8 +223,6 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           break; // pivot | abandon: drop this technique, continue
       }
     }
-    // The queue drained with nothing confirmed and no cap hit: a clean,
-    // honest "nothing in scope here" outcome rather than an unexplained stop.
     if (!state.haltedBy) state.haltedBy = "exhausted";
   } finally {
     await tier2?.dispose().catch(() => undefined);
