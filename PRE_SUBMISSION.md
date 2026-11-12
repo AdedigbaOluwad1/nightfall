@@ -82,13 +82,18 @@ who ships real things, and the report is the one artifact they take away and rer
 - `report/generate.ts` is **ten lines of Markdown** with a `TODO(R3): PDF`. It prints
   a title, then per finding a heading and the `remediation` string — nothing else. No
   evidence block, no CVSS, no request/response receipts, no severity rationale.
-- Upstream, `loop/agent.ts::toFinding` **hard-codes `severity: "high"` and leaves
-  `remediation: ""`.** So even once the generator is good, it renders blank bodies at
-  a uniform, unjustified severity. The data model (`evidence/models.ts`) has the
-  fields; the loop simply isn't populating them.
+- ~~Upstream, `loop/agent.ts::toFinding` **hard-codes `severity: "high"` and leaves
+  `remediation: ""`.**~~ **FIXED (commit on `pre-submission-cleanups`).** `toFinding`
+  now calls `findingProfile(technique, cve)`: every confirmed finding carries a
+  severity, a CVSS v3.1 vector, and concrete remediation argued from the vulnerability
+  class, and a cited CVE appends a patch directive. `evidence/models.ts` gained
+  `cvss`/`cvssScore`. The **data feed is done**; the generator that renders it into a
+  signed document is still open (below).
 
-So today a generated report is: a list of titles, every one "HIGH", every body empty.
-That is a JSON dump wearing a header — precisely the thing §2.4 says loses.
+So the remaining half of this task is the **generator**: `report/generate.ts` is still a
+ten-line Markdown stub that drops the evidence block and the CVSS field on the floor.
+The findings now arrive fully dressed — the report just doesn't wear them yet. That is
+the R3-flavored work still owed here.
 
 **What a judge must see.** One finding, fully dressed: title, CVSS vector + score, the
 in-scope request/response that is the _evidence_, a one-paragraph plain-English
@@ -147,10 +152,14 @@ be ripped out without the demo changing, we bolted it on.
 - **Real cost / routing — SOLID.** Every call is priced from Bifrost's live `/v1/models`
   catalog (`gateway/catalog.ts`, `pricing.ts`), source-tagged on `gateway.call`. No
   faked numbers, which is the rule we cannot break. _Done._
-- **Budget cap halting a runaway loop — SOLID code, UNSTAGED.** `Budget` +
-  `BudgetExceededError` exist and are tested; the loop catches the throw and stops.
-  Same gap as the gate: tested, not _staged_. We need the beat where a low budget cap
-  visibly halts the agent mid-loop with a readable "budget exceeded, stopping" line.
+- **Budget cap halting a runaway loop — DONE in code, now VISIBLE.** (commit on
+  `pre-submission-cleanups`.) The silent `break` is gone: the loop announces a single
+  `budget.exceeded` event tagged with the stage it bit in, records a `haltedBy` reason
+  (`objective | budget | steps | exhausted`) on `run.end`, and the CLI renders a bold
+  red `⛔ budget  cap $X reached (spent $Y) · halting the <stage> loop` line plus a
+  `halted: <reason>` on the summary. Covered by tests (announced exactly once; halt
+  reason asserted). The only step left is **staging it in the live demo** with a
+  deliberately low cap — which rides on TASK 1's cold run, not on more code.
 - **Cache hit — BLOCKED Bifrost-side, documented honestly.** The `cache-demo`
   subcommand and the client's cache-key/hit handling are code-proven; enabling the
   semantic cache on this single-container, DB-backed Bifrost deploy is blocked (it
