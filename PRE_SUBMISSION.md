@@ -314,7 +314,18 @@ model beat is powered on 29 Nov, with a recorded fallback if it 429s.
 
 ---
 
-## TASK 9 — Submission-package hygiene. [status: PARTIAL] — owner: all
+## TASK 9 — Submission-package hygiene. [status: DONE (this pass)] — owner: all
+
+> **Update 2026-11-12.** Done for this round. **Fresh-clone verified**: a clean clone
+> of the branch installs (1.9s), builds, passes all 49 tests, and runs the
+> `scope-check` beat 10/10 — reproducible with no tribal knowledge. **Rubric map made
+> honest**: §4 and the tech table claimed recon wraps `httpx/nuclei/ffuf/nmap`, but
+> `nuclei`/`ffuf` are in no source file and `nmap`'s output is discarded; now described
+> as what it is (in-scope crawler + fingerprinting + optional `httpx`), with a §4 note
+> pointing to this file for live per-row status. **README** now surfaces the
+> quota-free demo beats so a judge can reproduce the proofs. **AUTHORIZATION.md** (a
+> required deliverable, was a 9-line stub) now states the real, verifiable safety
+> model. Re-verify on the final pre-submit commit.
 
 The brief (`§3`) requires: working/reproducible demo; repo with README + setup +
 architecture; which statement + how requirements are met; clear demonstration of both
