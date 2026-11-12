@@ -1,9 +1,14 @@
-# Nightfall web view
+# Nightfall web view — Control Centre
 
-A live projected view of a run: the trace on the left, Bifrost / Tavily / scope
-"receipts" gauges on the right. It is a thin sink on the same `@nightfall/core` event
-stream the CLI renders — the CLI's `serve` command runs the loop and forwards every
-typed event over a WebSocket, and this vite + react app subscribes and renders.
+A live projected view of a run, styled as a dark mission console: the live trace on
+the left, the Bifrost / Tavily / scope "receipts" as a control-list of readouts on the
+right, and a running status ticker along the bottom. One emerald signal carries
+armed / live / confirmed; everything else is graphite and hairlines. Dark-first with a
+full light theme (toggle, top-right) and `prefers-color-scheme` respected.
+
+It is a thin sink on the same `@nightfall/core` event stream the CLI renders — the
+CLI's `serve` command runs the loop and forwards every typed event over a WebSocket,
+and this vite + react app subscribes and renders.
 
 ## Run it
 
