@@ -138,7 +138,20 @@ every other reasoning step — and I keep `gateway.complete` stable while doing 
 
 ---
 
-## TASK 3 — The scope-gate refusal, staged as a live beat. [status: SOLID code, UNSTAGED demo] — owner: R1 + all
+## TASK 3 — The scope-gate refusal, staged as a live beat. [status: DONE — and hardened] — owner: R1 + all
+
+> **Update 2026-11-12.** Done — and staging it caught a real bug first. Attacking
+> the gate for the demo revealed it used a raw `startsWith`, so allow `/app` leaked
+> `/apple` and `/app-secret` into scope: the exact sibling-path trap §2 names. Fixed
+> to path-segment matching (`matchesPrefix`). The traversal family (`/app/../admin`,
+> plain and `%2e`-encoded), userinfo host confusion (`…@evil.com`), and
+> IP-vs-hostname were already safe via URL normalization — now locked by adversarial
+> tests that replace the old TODO. The beat itself: a new `scope-check` subcommand
+> runs a frozen adversarial probe set and **self-checks each verdict against its
+> expected outcome**, failing non-zero on any out-of-scope behavior — a measured
+> proof, no model/Tavily/lab needed. Frozen files + README in `apps/cli/demo/`
+> (`scope-gate.scope.yaml`, `scope-gate-probes.json`, `scope-gate.md`). 10/10 probes
+> hold.
 
 `NIGHTFALL.md §2.3`: scope-safety is the **centerpiece, not a disclaimer**. An
 offensive agent that can _prove_ it stays in bounds reads as mature; one that falls to
