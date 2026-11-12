@@ -1,0 +1,16 @@
+
+scope gate — deny-by-default · host(s): localhost · allow: /rest, /api · deny: /rest/admin
+
+✓ ALLOW  in-scope REST API                        http://localhost:3000/rest/products/search?q=apple  — in scope
+✓ ALLOW  in-scope API                             http://localhost:3000/api/Users  — in scope
+✓ BLOCK  denied admin surface                     http://localhost:3000/rest/admin/application-configuration  — path /rest/admin/application-configuration matches deny /rest/admin
+✓ BLOCK  prefix-boundary sibling (/rest vs /restaurant) http://localhost:3000/restaurant  — path /restaurant matches no allow prefix
+✓ BLOCK  path traversal escape                    http://localhost:3000/rest/../admin  — path /admin matches no allow prefix
+✓ BLOCK  percent-encoded traversal                http://localhost:3000/rest/%2e%2e/admin  — path /admin matches no allow prefix
+✓ BLOCK  out-of-scope host                        http://evil.com/rest  — host evil.com not in allow.hosts
+✓ BLOCK  userinfo host confusion                  http://localhost:3000@evil.com/rest/products  — host evil.com not in allow.hosts
+✓ BLOCK  IP literal vs allowed hostname           http://127.0.0.1:3000/rest  — host 127.0.0.1 not in allow.hosts
+✓ BLOCK  unlisted surface (deny-by-default)       http://localhost:3000/internal  — path /internal matches no allow prefix
+
+10/10 probes behaved as scoped — deny-by-default holds.
+
