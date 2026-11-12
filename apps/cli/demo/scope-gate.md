@@ -22,18 +22,18 @@ explicitly denies `/rest/admin`.
 
 ## What it proves
 
-| # | probe | class | verdict |
-| - | ----- | ----- | ------- |
-| 1 | `/rest/products/search?q=apple` | in-scope REST | **ALLOW** |
-| 2 | `/api/Users` | in-scope API | **ALLOW** |
-| 3 | `/rest/admin/application-configuration` | explicit deny rule | **BLOCK** |
-| 4 | `/restaurant` | prefix-boundary sibling of `/rest` | **BLOCK** |
-| 5 | `/rest/../admin` | path traversal escape | **BLOCK** |
-| 6 | `/rest/%2e%2e/admin` | percent-encoded traversal | **BLOCK** |
-| 7 | `http://evil.com/rest` | out-of-scope host | **BLOCK** |
-| 8 | `http://localhost:3000@evil.com/…` | userinfo host confusion | **BLOCK** |
-| 9 | `http://127.0.0.1:3000/rest` | IP literal vs allowed hostname | **BLOCK** |
-| 10 | `/internal` | unlisted surface (deny-by-default) | **BLOCK** |
+| #   | probe                                   | class                              | verdict   |
+| --- | --------------------------------------- | ---------------------------------- | --------- |
+| 1   | `/rest/products/search?q=apple`         | in-scope REST                      | **ALLOW** |
+| 2   | `/api/Users`                            | in-scope API                       | **ALLOW** |
+| 3   | `/rest/admin/application-configuration` | explicit deny rule                 | **BLOCK** |
+| 4   | `/restaurant`                           | prefix-boundary sibling of `/rest` | **BLOCK** |
+| 5   | `/rest/../admin`                        | path traversal escape              | **BLOCK** |
+| 6   | `/rest/%2e%2e/admin`                    | percent-encoded traversal          | **BLOCK** |
+| 7   | `http://evil.com/rest`                  | out-of-scope host                  | **BLOCK** |
+| 8   | `http://localhost:3000@evil.com/…`      | userinfo host confusion            | **BLOCK** |
+| 9   | `http://127.0.0.1:3000/rest`            | IP literal vs allowed hostname     | **BLOCK** |
+| 10  | `/internal`                             | unlisted surface (deny-by-default) | **BLOCK** |
 
 Probe **4** is the one a bare `startsWith` gate fails: `/restaurant` string-starts
 with `/rest` but is a different path segment. The gate matches on path-segment

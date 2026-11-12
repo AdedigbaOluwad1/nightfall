@@ -10,7 +10,11 @@ const sqli: Finding = {
   cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
   cvssScore: 9.8,
   evidence: [
-    { request: "GET /rest/products/search?q='\"", response: "SQLITE_ERROR: near \"'\"", note: "DB error surfaced" },
+    {
+      request: "GET /rest/products/search?q='\"",
+      response: 'SQLITE_ERROR: near "\'"',
+      note: "DB error surfaced",
+    },
   ],
   remediation: "Use parameterized queries.",
 };
@@ -22,7 +26,9 @@ const bac: Finding = {
   severity: "high",
   cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
   cvssScore: 7.5,
-  evidence: [{ request: "GET /rest/admin/application-configuration", response: '{"config":{}}', note: "" }],
+  evidence: [
+    { request: "GET /rest/admin/application-configuration", response: '{"config":{}}', note: "" },
+  ],
   remediation: "Enforce server-side authorization.",
 };
 
