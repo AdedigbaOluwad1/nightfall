@@ -265,7 +265,17 @@ survives a full run without the operator touching the keyboard.
 
 ---
 
-## TASK 7 — The rehearsed 3-minute demo + the recording. [status: MISSING] — owner: all
+## TASK 7 — The rehearsed 3-minute demo + the recording. [status: BEAT SHEET + TRANSCRIPTS DONE] — owner: all
+
+> **Update 2026-11-12.** `DEMO.md` is the rehearsed 5-beat, 3-minute sheet — each beat
+> mapped to a rubric row with its command, payoff, and a captured fallback. Recordings
+> committed under `apps/cli/demo/recordings/`: `scope-check.txt` (10/10, deterministic),
+> `cold-run.trace.txt` (honest — grounding degrades under the 429, loop still completes
+> with a real finding), `report.sample.md` (the signed report). The "demo held hostage
+> to a live run" failure mode is now covered for the model-free beats. **Still open:**
+> a real _screen/video_ recording (media, not text), and live captures of the two
+> quota-gated beats (Tavily causing a finding; the budget-cap halt, which needs model
+> spend to accrue) — both ride on the TASK 8 quota decision.
 
 `NIGHTFALL.md §2.5`: we win with a **rehearsed 3-minute demo, not a hopeful 6-minute
 terminal scroll**, and §2 names "a demo held hostage to a live run with no recording"
