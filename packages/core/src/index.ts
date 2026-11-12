@@ -1,7 +1,7 @@
 export { bus } from "./events/bus.js";
 export * from "./events/types.js";
 export { Finding } from "./evidence/models.js";
-export { EvidenceStore } from "./evidence/store.js";
+export { EvidenceStore, readFindings } from "./evidence/store.js";
 export { Gateway } from "./gateway/bifrostClient.js";
 export { Budget, BudgetExceededError } from "./gateway/budget.js";
 export {
@@ -30,7 +30,7 @@ export {
   ungroundedLookup,
 } from "./hypothesis/tavilyClient.js";
 export { runLoop } from "./loop/agent.js";
-export { toMarkdown } from "./report/generate.js";
+export { type ReportMeta, toMarkdown } from "./report/generate.js";
 export { ScopeGate } from "./scope/gate.js";
 export { loadScope } from "./scope/parser.js";
 export { ScopeFile } from "./scope/schema.js";

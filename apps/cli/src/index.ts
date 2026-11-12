@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import {
   Budget,
   bus,
+  EvidenceStore,
+  type Finding,
   type FrozenTarget,
   formatAblationTable,
   Gateway,
@@ -10,11 +12,13 @@ import {
   loadScope,
   type PrecisionScore,
   precisionAtK,
+  readFindings,
   runAblation,
   runLoop,
   ScopeGate,
   type StepType,
   setHypothesisGateway,
+  toMarkdown,
   ungroundedLookup,
 } from "@nightfall/core";
 import { Command } from "commander";
@@ -43,7 +47,46 @@ program
     const gateway = new Gateway(new Budget(scope.budgetUsd));
     setHypothesisGateway(gateway);
     bus.emit("scope.loaded", { hosts: scope.allow.hosts.length, paths: scope.allow.paths.length });
-    await runLoop(scope, gate, gateway);
+
+    const evidencePath = process.env.NF_EVIDENCE_PATH ?? fromCwd("nightfall-findings.jsonl");
+    const store = new EvidenceStore(evidencePath);
+    const findings: Finding[] = [];
+    const state = await runLoop(scope, gate, gateway, {
+      record: (f) => {
+        store.record(f);
+        findings.push(f);
+      },
+    });
+
+    const report = toMarkdown(findings, {
+      target: scope.target,
+      objective: scope.objective,
+      runId: state.runId,
+      haltedBy: state.haltedBy,
+      costUsd: state.costUsd,
+    });
+    const reportPath = `${evidencePath.replace(/\.jsonl$/, "")}.report.md`;
+    writeFileSync(reportPath, report);
+    console.log(`\nreport → ${reportPath}`);
+  });
+
+program
+  .command("report")
+  .description("render a client-ready Markdown report from a run's evidence JSONL")
+  .option("--in <path>", "evidence JSONL file", "nightfall-findings.jsonl")
+  .requiredOption("--target <url>", "target the findings are for")
+  .option("--objective <text>", "engagement objective")
+  .option("--out <path>", "write the report (default: print to stdout)")
+  .action((opts) => {
+    const findings = readFindings(fromCwd(opts.in));
+    const md = toMarkdown(findings, { target: opts.target, objective: opts.objective });
+    if (opts.out) {
+      const out = fromCwd(opts.out);
+      writeFileSync(out, md);
+      console.log(`report → ${out} · ${findings.length} finding(s)`);
+    } else {
+      console.log(md);
+    }
   });
 
 program

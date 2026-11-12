@@ -104,6 +104,7 @@ function classify(technique: string): Kind {
 
 /** Severity, CVSS, and remediation for a confirmed finding of a given class. */
 export interface FindingProfile {
+  name: string;
   severity: Severity;
   cvss: string;
   cvssScore: number;
@@ -112,6 +113,7 @@ export interface FindingProfile {
 
 const PROFILES: Record<Kind, FindingProfile> = {
   sqli: {
+    name: "SQL Injection",
     severity: "critical",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
     cvssScore: 9.8,
@@ -119,6 +121,7 @@ const PROFILES: Record<Kind, FindingProfile> = {
       "Use parameterized queries or prepared statements for every database access and never concatenate untrusted input into SQL. Add allow-list input validation and run the application under a least-privilege database account.",
   },
   xss: {
+    name: "Reflected Cross-Site Scripting (XSS)",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N",
     cvssScore: 7.4,
@@ -126,6 +129,7 @@ const PROFILES: Record<Kind, FindingProfile> = {
       "Context-encode all untrusted output and rely on the framework's auto-escaping, serve a strict Content-Security-Policy, and treat any raw-HTML sink as a mandatory review gate.",
   },
   csrf: {
+    name: "Cross-Site Request Forgery (CSRF)",
     severity: "medium",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N",
     cvssScore: 5.4,
@@ -133,6 +137,7 @@ const PROFILES: Record<Kind, FindingProfile> = {
       "Set SameSite=Lax or Strict on session cookies, require a per-session anti-CSRF token on every state-changing request, and verify the Origin or Referer header server-side.",
   },
   traversal: {
+    name: "Path Traversal / File Inclusion",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
     cvssScore: 7.5,
@@ -140,6 +145,7 @@ const PROFILES: Record<Kind, FindingProfile> = {
       "Canonicalize paths and confine file access to an allow-listed base directory, reject directory-traversal sequences after normalization, and never hand user input to filesystem APIs directly.",
   },
   cmdi: {
+    name: "OS Command Injection",
     severity: "critical",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
     cvssScore: 9.8,
@@ -147,6 +153,7 @@ const PROFILES: Record<Kind, FindingProfile> = {
       "Never pass user input to a shell; invoke processes with an argument array and no shell interpolation, apply strict allow-list validation, and run with least privilege.",
   },
   bac: {
+    name: "Broken Access Control",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
     cvssScore: 7.5,
@@ -154,6 +161,7 @@ const PROFILES: Record<Kind, FindingProfile> = {
       "Enforce server-side authorization on every request against the authenticated principal, deny by default, and never rely on unlinked or obscure URLs for protection.",
   },
   fallback: {
+    name: "Security Exposure",
     severity: "medium",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
     cvssScore: 5.3,

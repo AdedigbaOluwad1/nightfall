@@ -11,11 +11,13 @@ describe("findingProfile — client-ready severity and remediation", () => {
     expect(findingProfile("broken access control").severity).toBe("high");
   });
 
-  it("carries a parseable CVSS v3.1 vector and a concrete remediation", () => {
+  it("carries a parseable CVSS v3.1 vector, a concrete remediation, and a client-ready name", () => {
     const p = findingProfile("SQL injection");
     expect(p.cvss).toMatch(/^CVSS:3\.1\//);
     expect(p.cvssScore).toBeGreaterThan(0);
     expect(p.remediation.length).toBeGreaterThan(20);
+    expect(p.name).toBe("SQL Injection");
+    expect(findingProfile("access-probe").name).toBe("Broken Access Control");
   });
 
   it("falls back to a safe medium profile for an unrecognized technique", () => {

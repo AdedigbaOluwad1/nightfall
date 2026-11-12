@@ -66,7 +66,8 @@ function toFinding(item: WorkItem, result: AttemptResult): Finding {
   const cveTag = item.cve ? ` (${item.cve})` : "";
   return {
     id: crypto.randomUUID(),
-    title: `${item.technique} at ${item.url}${cveTag}`,
+    title: `${profile.name} at ${item.url}${cveTag}`,
+    technique: item.technique,
     severity: profile.severity,
     cvss: profile.cvss,
     cvssScore: profile.cvssScore,

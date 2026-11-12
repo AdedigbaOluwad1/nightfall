@@ -20,7 +20,7 @@ export interface PrecisionOptions {
 }
 
 function attributedToCandidate(findings: Finding[], candidate: Candidate): boolean {
-  return findings.some((f) => f.title.startsWith(`${candidate.technique} `));
+  return findings.some((f) => f.technique === candidate.technique);
 }
 
 export async function precisionAtK(
