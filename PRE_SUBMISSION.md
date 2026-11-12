@@ -31,7 +31,19 @@ are the parts still open.
 
 ---
 
-## TASK 1 — Prove the cold run. [status: RISK / UNVERIFIED] — owner: R1 + R2
+## TASK 1 — Prove the cold run. [status: CORE VERIFIED, grounding unproven] — owner: R1 + R2
+
+> **Update 2026-11-12.** Ran it. A cold run against a fresh Juice Shop (pinned
+> v20.3.0) **completed autonomously, no human, no crash, exit 0**, reached the
+> objective, emitted a **real finding** — unauthenticated access to
+> `/rest/admin/application-configuration` (Broken Access Control, CVSS 7.5) with the
+> actual request/response captured — and terminated cleanly (`halted: objective`).
+> The differentiator works. **Two honest caveats:** (1) the win came from the
+> always-on access-probe, **not** from a Tavily-grounded hypothesis, because (2) the
+> Cloudflare model was quota-dead (429), so grounding degraded. The loop's
+> _completion_ is proven; **grounding _causing_ a finding (TASK 5) is still unproven
+> live** — it's quota-blocked, not broken. The run also exposed a real bug (grounding
+> failures were swallowed silently) which is now **fixed and visible** in the trace.
 
 **This is the whole challenge.** `NIGHTFALL.md §2.1`: the single differentiator is
 hitting go on an unfamiliar target, stepping back, and having it _work_. Everything
@@ -71,7 +83,18 @@ the same as not having it.
 
 ---
 
-## TASK 2 — A report a consultant would sign. [status: THIN] — owner: R3 (R2 feeds it)
+## TASK 2 — A report a consultant would sign. [status: DONE (MD); PDF stretch open] — owner: R3 (R2 feeds it)
+
+> **Update 2026-11-12.** Done in Markdown. `report/generate.ts` is no longer a stub:
+> `toMarkdown` renders a client-ready document — metadata + run provenance, a
+> severity-counted summary, one dressed section per finding (severity, CVSS
+> vector/score, in-scope request/response evidence, remediation), ordered
+> most-severe first, with fenced-body escaping and an honest empty-run case. Wired
+> both ways: the `run` command auto-writes `<evidence>.report.md`, and a new `report`
+> subcommand renders from any evidence JSONL. Finding titles now use consultant-grade
+> class names. Validated live — the cold run drops a report naming the unauth
+> admin-config access as Broken Access Control (CVSS 7.5). **Only the PDF export
+> (marked → puppeteer) remains, and it is a polish stretch, not a blocker.**
 
 `NIGHTFALL.md §2.4`: the rubric demands **client-ready** — findings, evidence, CVSS
 severity, remediation, cleanly formatted, not a JSON dump. Judges tell in two seconds
@@ -252,7 +275,15 @@ from the beat sheet, and every beat has a recorded fallback that lands the same 
 
 ---
 
-## TASK 8 — The demo-day quota plan. [status: RISK] — owner: R2
+## TASK 8 — The demo-day quota plan. [status: RISK — now PROVEN, not theoretical] — owner: R2
+
+> **Update 2026-11-12.** This bit us for real. The 11/12 cold run 429'd on the
+> Cloudflare free tier ("used up your daily free allocation of 10,000 neurons") — a
+> fresh UTC day was already exhausted. The cap is **account-wide across all Workers
+> AI models**, so dropping to a smaller Llama does not help. Decision taken (owner):
+> **park the live grounding proof** and do model-free tasks; revisit the quota posture
+> (Workers Paid vs. a fallback provider vs. relying on recordings) before demo day.
+> The grounding-degraded path is now at least honest and visible when it happens.
 
 **The honest problem.** The model behind every reasoning step is Cloudflare Workers AI
 (Llama 3.3 70B) on the **free tier: 10,000 neurons/day**, which today's runs exhausted
