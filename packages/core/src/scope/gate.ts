@@ -6,6 +6,17 @@ export interface GateDecision {
 }
 
 /**
+ * Prefix match on path-segment boundaries, NOT raw string prefix. `/app` covers
+ * `/app` and `/app/...` but never `/apple` or `/app-secret` — a bare
+ * `startsWith` would leak those into scope. Root (`/`) covers everything.
+ */
+function matchesPrefix(path: string, prefix: string): boolean {
+  if (prefix === "" || prefix === "/") return true;
+  const base = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+  return path === base || path.startsWith(`${base}/`);
+}
+
+/**
  * Deny-by-default request gate. THE most important file in the repo.
  * - No LLM/model call may ever be added here.
  * - A request is allowed only if its host is in allow.hosts AND its path
@@ -30,12 +41,12 @@ export class ScopeGate {
 
     const path = url.pathname;
     for (const denied of this.scope.deny.paths) {
-      if (path.startsWith(denied)) {
+      if (matchesPrefix(path, denied)) {
         return { allowed: false, reason: `path ${path} matches deny ${denied}` };
       }
     }
 
-    const allowed = this.scope.allow.paths.some((p) => path.startsWith(p));
+    const allowed = this.scope.allow.paths.some((p) => matchesPrefix(path, p));
     if (!allowed) {
       return { allowed: false, reason: `path ${path} matches no allow prefix` };
     }

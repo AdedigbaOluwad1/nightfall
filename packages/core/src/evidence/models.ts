@@ -10,7 +10,11 @@ export const Evidence = z.object({
 export const Finding = z.object({
   id: z.string(),
   title: z.string(),
+  /** The originating technique — the stable attribution key for precision@k. */
+  technique: z.string().default(""),
   severity: Severity,
+  cvss: z.string().default(""),
+  cvssScore: z.number().optional(),
   evidence: z.array(Evidence),
   remediation: z.string().default(""),
 });

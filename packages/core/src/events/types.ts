@@ -6,6 +6,8 @@ export type Severity = z.infer<typeof Severity>;
 export const StepType = z.enum(["classify", "exploit_reason", "report_write"]);
 export type StepType = z.infer<typeof StepType>;
 
+export type HaltReason = "objective" | "budget" | "steps" | "exhausted";
+
 /** One typed event per interesting thing that happens during a run. */
 export interface NightfallEvents {
   "run.start": { runId: string; target: string; objective: string };
@@ -20,6 +22,7 @@ export interface NightfallEvents {
     freshAfterCutoff?: boolean;
   };
   "hypothesis.ranked": { candidates: number; grounded: boolean };
+  "hypothesis.failed": { component: string; version: string; reason: string };
   "exploit.attempt": { technique: string; target: string; n: number };
   "exploit.interpret": { decision: "retry" | "escalate" | "abandon" | "pivot"; note: string };
   "gateway.call": {
@@ -30,9 +33,16 @@ export interface NightfallEvents {
     priceSource?: "override" | "catalog" | "table" | "estimate";
   };
   "session.login": { boundary: string; tier: 1 | 2 };
+  "budget.exceeded": { capUsd: number; spentUsd: number; stage: "hypothesis" | "attempt" };
   "finding.confirmed": { id: string; title: string; severity: Severity };
   "objective.reached": { via: string; steps: number; costUsd: number };
-  "run.end": { runId: string; findings: number; blocked: number; costUsd: number };
+  "run.end": {
+    runId: string;
+    findings: number;
+    blocked: number;
+    costUsd: number;
+    haltedBy?: HaltReason;
+  };
 }
 
 export type NightfallEventName = keyof NightfallEvents;

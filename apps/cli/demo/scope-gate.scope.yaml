@@ -1,0 +1,10 @@
+target: "http://localhost:3000/"
+objective: "Assess only the authorized REST/API surface of the lab"
+allow:
+  hosts: ["localhost"]
+  paths: ["/rest", "/api"]
+deny:
+  paths: ["/rest/admin"]
+budgetUsd: 1
+maxSteps: 10
+credentials: []

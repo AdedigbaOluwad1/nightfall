@@ -35,6 +35,13 @@ export function attachRenderer(): void {
   bus.on("tavily.cve", (e) =>
     console.log(`  ${tag.tavily(`▸ tavily`)}  ${e.component} ${e.version} → ${e.cve}`),
   );
+  bus.on("hypothesis.failed", (e) =>
+    console.log(
+      "  " +
+        pc.yellow("⚠ grounding") +
+        `  ${e.component} ${e.version} — degraded, running ungrounded · ${e.reason}`,
+    ),
+  );
   bus.on("exploit.attempt", (e) =>
     console.log(`  ${tag.exploit(`▸ exploit`)}  #${e.n} ${e.technique}`),
   );
@@ -44,6 +51,13 @@ export function attachRenderer(): void {
       "  " +
         tag.gateway(`▸ bifrost`) +
         `  ${e.step} → ${e.model} · $${e.costUsd.toFixed(4)} · ${e.cacheHit ? "cache HIT" : "miss"}`,
+    ),
+  );
+  bus.on("budget.exceeded", (e) =>
+    console.log(
+      "  " +
+        pc.bold(pc.red("⛔ budget")) +
+        `  cap $${e.capUsd.toFixed(2)} reached (spent $${e.spentUsd.toFixed(4)}) · halting the ${e.stage} loop`,
     ),
   );
   bus.on("finding.confirmed", (e) =>
@@ -59,7 +73,8 @@ export function attachRenderer(): void {
   bus.on("run.end", (e) =>
     console.log(
       pc.bold("nightfall ▸") +
-        ` done · ${e.findings} finding(s) · ${e.blocked} blocked · $${e.costUsd.toFixed(2)}`,
+        ` done · ${e.findings} finding(s) · ${e.blocked} blocked · $${e.costUsd.toFixed(2)}` +
+        (e.haltedBy ? ` · halted: ${e.haltedBy}` : ""),
     ),
   );
 }

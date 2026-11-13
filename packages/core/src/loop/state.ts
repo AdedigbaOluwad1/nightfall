@@ -1,3 +1,5 @@
+import type { HaltReason } from "../events/types.js";
+
 export interface RunState {
   runId: string;
   steps: number;
@@ -6,6 +8,8 @@ export interface RunState {
   findings: number;
   blocked: number;
   costUsd: number;
+  /** Why the loop stopped — set once, read by the run summary and report. */
+  haltedBy?: HaltReason;
 }
 
 export function initialState(runId: string, maxSteps: number): RunState {

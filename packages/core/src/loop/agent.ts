@@ -12,7 +12,7 @@ import type { ScopeFile } from "../scope/schema.js";
 import { BrowserSession } from "../session/browserSession.js";
 import { HttpSession } from "../session/httpSession.js";
 import type { Session } from "../session/index.js";
-import { type AttemptOpts, type AttemptResult, attempt } from "./actions.js";
+import { type AttemptOpts, type AttemptResult, attempt, findingProfile } from "./actions.js";
 import { interpret } from "./interpret.js";
 import { initialState, type RunState } from "./state.js";
 
@@ -62,14 +62,19 @@ function objectiveTokens(objective: string): string[] {
 }
 
 function toFinding(item: WorkItem, result: AttemptResult): Finding {
+  const profile = findingProfile(item.technique, item.cve);
+  const cveTag = item.cve ? ` (${item.cve})` : "";
   return {
     id: crypto.randomUUID(),
-    title: `${item.technique} at ${item.url}`,
-    severity: "high",
+    title: `${profile.name} at ${item.url}${cveTag}`,
+    technique: item.technique,
+    severity: profile.severity,
+    cvss: profile.cvss,
+    cvssScore: profile.cvssScore,
     evidence: result.evidence
       ? [{ ...result.evidence, note: result.evidence.note ?? result.note }]
       : [{ request: `GET ${item.url}`, response: "", note: result.note }],
-    remediation: "",
+    remediation: profile.remediation,
   };
 }
 
@@ -82,6 +87,23 @@ function toFinding(item: WorkItem, result: AttemptResult): Finding {
 async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise<void> {
   const primary = deps.session;
   await primary.login().catch(() => undefined); // an unauthenticated session is still valid
+
+  let budgetAnnounced = false;
+  const announceBudget = (stage: "hypothesis" | "attempt"): void => {
+    if (budgetAnnounced) return;
+    budgetAnnounced = true;
+    state.haltedBy = "budget";
+    bus.emit("budget.exceeded", {
+      capUsd: deps.budgetUsd,
+      spentUsd: state.costUsd,
+      stage,
+    });
+  };
+  const overBudget = (stage: "hypothesis" | "attempt"): boolean => {
+    if (state.costUsd < deps.budgetUsd) return false;
+    announceBudget(stage);
+    return true;
+  };
 
   let reconResult: ReconResult;
   try {
@@ -97,12 +119,17 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   // Grounded hypotheses per fingerprint — best-effort; a budget stop here just
   // means we proceed with the generic access probes below.
   for (const fp of reconResult.fingerprints) {
-    if (state.costUsd >= deps.budgetUsd) break;
+    if (overBudget("hypothesis")) break;
     let candidates: Candidate[] = [];
     try {
       candidates = await deps.hypothesize(fp);
     } catch (err) {
-      if (err instanceof BudgetExceededError) break;
+      if (err instanceof BudgetExceededError) {
+        announceBudget("hypothesis");
+        break;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      bus.emit("hypothesis.failed", { component: fp.component, version: fp.version, reason });
     }
     for (const c of candidates) {
       queue.push({ technique: c.technique, url: probeUrl, tier: 1, retries: 0, cve: c.cve });
@@ -120,8 +147,11 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
 
   try {
     while (queue.length > 0 && !state.objectiveReached) {
-      if (state.steps >= state.maxSteps) break; // step cap halts a stuck run
-      if (state.costUsd >= deps.budgetUsd) break; // budget cap halts
+      if (state.steps >= state.maxSteps) {
+        if (!state.haltedBy) state.haltedBy = "steps";
+        break;
+      }
+      if (overBudget("attempt")) break;
 
       const item = queue.shift();
       if (!item) break;
@@ -154,6 +184,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         bus.emit("exploit.interpret", { decision: "pivot", note: "confirmed; pivot" });
         // A confirmed objective-signal finding reaches the objective.
         state.objectiveReached = true;
+        state.haltedBy = "objective";
         bus.emit("objective.reached", {
           via: item.technique,
           steps: state.steps,
@@ -192,6 +223,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           break; // pivot | abandon: drop this technique, continue
       }
     }
+    if (!state.haltedBy) state.haltedBy = "exhausted";
   } finally {
     await tier2?.dispose().catch(() => undefined);
   }
@@ -258,6 +290,7 @@ export async function runLoop(
     findings: state.findings,
     blocked: state.blocked,
     costUsd: state.costUsd,
+    haltedBy: state.haltedBy,
   });
   return state;
 }
