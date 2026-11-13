@@ -66,6 +66,7 @@ with no human nudge, and hands back findings — on a lab the operator did not t
 against.
 
 **Acceptance test.**
+
 1. Boot a fresh lab (`labs/`, Juice Shop pinned v20.3.0) under OrbStack.
 2. Run the default command against `example.scope.yaml` with Cloudflare quota available.
 3. The loop completes without a manual intervention, emits at least one finding, and
@@ -123,6 +124,7 @@ in-scope request/response that is the _evidence_, a one-paragraph plain-English
 remediation, severity that is _argued_ from the evidence, not asserted.
 
 **Acceptance test.**
+
 1. `toFinding` derives severity from the attempt result / interpret verdict, not a
    constant; populates `remediation` and an evidence receipt from the real
    request/response.
@@ -297,6 +299,7 @@ _is_ a live run — which is also TASK 1, which is unverified — so we are curr
 exact "held hostage to a live run" failure mode the source-of-truth warns against.
 
 **What this task is.**
+
 - A written 3-minute beat sheet: cold run completes → Tavily causes a finding → the
   scope gate refuses out-of-scope → Bifrost cost + budget-cap halt → the signed report.
   Each beat maps to a task above and to a rubric row in `§4`.

@@ -71,16 +71,16 @@ From the official brief (which overrides any secondhand summary):
 
 Each 03 requirement, the feature that satisfies it, and how we _prove_ it to a judge. Treat "how we prove it" as the acceptance test.
 
-| 03 requirement                                    | Our feature                                        | Proof a judge sees                                                             |
-| ------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 03 requirement                                    | Our feature                                                                                                   | Proof a judge sees                                                             |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Enumerate only authorized surface with real tools | Scope gate + in-scope crawler with header/cookie/body fingerprinting; optional `httpx` tech-detect enrichment | Recon log shows only in-scope targets; every request passed the gate           |
-| Interpret output, choose next actions, recover    | Stateful decide/recover loop                       | Live trace: a failed attempt, a pivot, a recovery — autonomously               |
-| Complete the objective, incl. multi-step          | Objective tracker; loop runs to objective or cap   | Agent reaches the planted objective on an unfamiliar lab                       |
-| Respect scope strictly (out-of-scope = auto-fail) | Hard-coded deny-by-default gate, no LLM inside     | Live: agent refuses an out-of-scope target; audit log shows zero leakage       |
-| Client-ready report                               | Report generator over structured findings          | PDF/MD with CVSS, evidence, remediation per finding                            |
-| Meaningful Bifrost use                            | Gateway: routing, budget cap, cache, logs          | On screen: cost/run, cache hit, budget cap halting a runaway loop              |
-| Meaningful Tavily use                             | Live CVE/advisory grounding + the ablation         | A Tavily-sourced CVE causes a finding; measured grounded-vs-ungrounded numbers |
-| Safety & authorization docs                       | AUTHORIZATION.md + scope-enforcement design        | Present, clear, deny-by-default explained                                      |
+| Interpret output, choose next actions, recover    | Stateful decide/recover loop                                                                                  | Live trace: a failed attempt, a pivot, a recovery — autonomously               |
+| Complete the objective, incl. multi-step          | Objective tracker; loop runs to objective or cap                                                              | Agent reaches the planted objective on an unfamiliar lab                       |
+| Respect scope strictly (out-of-scope = auto-fail) | Hard-coded deny-by-default gate, no LLM inside                                                                | Live: agent refuses an out-of-scope target; audit log shows zero leakage       |
+| Client-ready report                               | Report generator over structured findings                                                                     | PDF/MD with CVSS, evidence, remediation per finding                            |
+| Meaningful Bifrost use                            | Gateway: routing, budget cap, cache, logs                                                                     | On screen: cost/run, cache hit, budget cap halting a runaway loop              |
+| Meaningful Tavily use                             | Live CVE/advisory grounding + the ablation                                                                    | A Tavily-sourced CVE causes a finding; measured grounded-vs-ungrounded numbers |
+| Safety & authorization docs                       | AUTHORIZATION.md + scope-enforcement design                                                                   | Present, clear, deny-by-default explained                                      |
 
 > **This table is the target map, not a status report.** For the honest, current
 > state of each row — what is live-proven, what is code-proven, and what is still
