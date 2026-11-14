@@ -53,6 +53,13 @@ export function attachRenderer(): void {
     console.log(`  ${tag.exploit(`▸ exploit`)}  #${e.n} ${e.technique}`),
   );
   bus.on("exploit.interpret", (e) => console.log(`    └ ${e.decision.toUpperCase()} · ${e.note}`));
+  bus.on("session.login", (e) =>
+    console.log(
+      e.ok
+        ? `  ${pc.green("▸ session")}  authenticated (tier ${e.tier}${e.boundary ? `, ${e.boundary}` : ""})`
+        : `  ${pc.red("▸ session")}  ${pc.red("LOGIN FAILED")} — credentials provided but authentication did not take (tier ${e.tier}); probing continues UNAUTHENTICATED`,
+    ),
+  );
   bus.on("gateway.call", (e) =>
     console.log(
       "  " +

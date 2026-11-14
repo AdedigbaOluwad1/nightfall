@@ -66,7 +66,20 @@ export class BrowserSession implements Session {
 
     // Settle without letting a missing navigation throw.
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
-    bus.emit("session.login", { boundary: this.boundary, tier: 2 });
+
+    // Verify the login took rather than trusting the click: a failed login leaves a
+    // password field on the page or bounces back to the login URL. A silent failure
+    // here would turn a broken login into a false clean scan.
+    const after = await page.content();
+    const stillLoginForm = /<input[^>]*type=["']?password/i.test(after);
+    const bouncedToLogin = page.url().split("#")[0] === cred.loginUrl.split("#")[0];
+    const ok = !stillLoginForm && !bouncedToLogin;
+    bus.emit("session.login", { boundary: this.boundary, tier: 2, ok });
+    if (!ok) {
+      throw new Error(
+        "login did not authenticate (tier 2) — the login form is still present after submit",
+      );
+    }
   }
 
   async request(req: SessionRequest): Promise<SessionResponse> {
