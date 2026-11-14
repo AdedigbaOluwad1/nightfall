@@ -550,6 +550,17 @@ async function commandInjectionCheck(
   };
 }
 
+// An auth wall: a 401/403, or a login page a dropped/expired session was
+// redirected to. A word from the objective echoing on a login screen ("Admin
+// login") is NOT the objective reached — treating it as a finding is the
+// classic session-expiry false positive on an unfamiliar target.
+const LOGIN_PAGE =
+  /<input[^>]+type=["']?password|name=["']?(?:password|passwd|pwd)\b|action=["'][^"']*\blog[-_]?in\b|(?:please\s+)?(?:log[\s-]?in|sign[\s-]?in)\s+to\s+(?:continue|your\s+account)/i;
+
+function isAuthWall(status: number, body: string): boolean {
+  return status === 401 || status === 403 || LOGIN_PAGE.test(body);
+}
+
 /** GET `url` and report whether a reachable page matches the objective tokens. */
 async function probeObjective(
   session: Session,
@@ -560,6 +571,17 @@ async function probeObjective(
   const sent = await send(session, { url });
   if (sent.kind === "result") return sent.result;
   const { res, snippet, base } = sent;
+
+  // A dropped session reads as an auth wall, never as the objective — otherwise
+  // an expired-cookie redirect to a 200 login page would confirm falsely.
+  if (isAuthWall(res.status, snippet)) {
+    return {
+      ok: false,
+      applicable: false,
+      note: `${technique}: auth wall (${res.status}) — session absent/expired, objective not reached`,
+      ...base,
+    };
+  }
 
   const hay = `${url} ${snippet}`.toLowerCase();
   const matched = hint.filter((t) => t.length > 2 && hay.includes(t));

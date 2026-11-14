@@ -158,6 +158,31 @@ describe("attempt — technique-aware dispatch", () => {
     expect(noSignal.ok).toBe(false);
   });
 
+  it("does not confirm the objective off an auth wall (expired-session false positive)", async () => {
+    // A dropped session is redirected to a 200 login page that happens to carry
+    // an objective word ("Admin login"). This must NOT read as objective reached.
+    const loginPage = new StubSession(() => ({
+      status: 200,
+      body: '<form action="/login"><h1>Admin login</h1><input type="password" name="password"></form>',
+    }));
+    const falsePos = await attempt(
+      loginPage,
+      "Broken Access Control",
+      opts({ objectiveHint: ["admin"] }),
+    );
+    expect(falsePos.ok).toBe(false);
+    expect(falsePos.applicable).toBe(false);
+
+    // A bare 401 is an auth wall too, never a finding.
+    const unauth = new StubSession(() => ({ status: 401, body: "admin area" }));
+    const blocked = await attempt(
+      unauth,
+      "Broken Access Control",
+      opts({ objectiveHint: ["admin"] }),
+    );
+    expect(blocked.ok).toBe(false);
+  });
+
   it("at the bare root, steers broken-access to the admin surface but not unrecognized techniques", async () => {
     // A server whose root carries no objective token, but whose admin surface does.
     const perPath = new StubSession((req) => {
