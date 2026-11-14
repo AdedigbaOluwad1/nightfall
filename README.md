@@ -27,10 +27,12 @@ The two model-free beats run from a clean clone with no lab and no API quota —
 a **measured** proof, not a claim:
 
 ```bash
-# Scope safety: the deny-by-default gate refuses 10 adversarial out-of-scope probes.
+# Scope safety: the deny-by-default gate refuses adversarial out-of-scope probes.
 pnpm --filter @nightfall/cli dev -- scope-check \
-  --scope apps/cli/demo/scope-gate.scope.yaml \
-  --probes apps/cli/demo/scope-gate-probes.json
+  --scope packages/core/src/scope/example.scope.yaml \
+  --url http://localhost:3000/logout \
+  --url http://evil.example.com/ \
+  --url "http://localhost:3000/foo/%2e%2e/logout"
 
 # Client-ready report: render a signed-quality report from a run's evidence JSONL.
 pnpm --filter @nightfall/cli dev -- report \
@@ -44,9 +46,7 @@ The Tavily grounding proof needs model quota:
 pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.json
 ```
 
-Frozen demo artifacts and their write-ups live in [`apps/cli/demo/`](./apps/cli/demo/)
-(`scope-gate.md`, `README.md`). Current build status per rubric row is tracked in
-[`PRE_SUBMISSION.md`](./PRE_SUBMISSION.md).
+Current build status per rubric row is tracked in [`PRE_SUBMISSION.md`](./PRE_SUBMISSION.md).
 
 ## Layout
 

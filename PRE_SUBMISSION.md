@@ -151,9 +151,9 @@ every other reasoning step — and I keep `gateway.complete` stable while doing 
 > tests that replace the old TODO. The beat itself: a new `scope-check` subcommand
 > runs a frozen adversarial probe set and **self-checks each verdict against its
 > expected outcome**, failing non-zero on any out-of-scope behavior — a measured
-> proof, no model/Tavily/lab needed. Frozen files + README in `apps/cli/demo/`
-> (`scope-gate.scope.yaml`, `scope-gate-probes.json`, `scope-gate.md`). 10/10 probes
-> hold.
+> proof, no model/Tavily/lab needed. 10/10 probes held; the frozen fixture files have
+> since been removed in favor of inline `--url` probes against
+> `packages/core/src/scope/example.scope.yaml` (see `AUTHORIZATION.md`).
 
 `NIGHTFALL.md §2.3`: scope-safety is the **centerpiece, not a disclaimer**. An
 offensive agent that can _prove_ it stays in bounds reads as mature; one that falls to
@@ -223,7 +223,8 @@ measure it, not assert it.
 **The honest status.** The **measurement** half is SOLID and is my strongest artifact:
 the ablation shows grounding load-bearing on freshness (WebGoat: grounded 5 fresh CVEs
 @ 100% vs ungrounded 0) and on citation validity (Log4j: grounded recovers the full
-Log4Shell chain 4/4 vs the bare model's 2), frozen in `apps/cli/demo/`. What is _not_
+Log4Shell chain 4/4 vs the bare model's 2), from a frozen grounded/ungrounded pair.
+What is _not_
 yet shown is the **causal** half on the live `run` path: a Tavily-sourced fresh CVE
 flowing through hypothesis → a successful `attempt` → a finding in the report. That
 depends on TASK 1 (a completing cold run) and TASK 2 (findings that actually render).
@@ -281,11 +282,10 @@ survives a full run without the operator touching the keyboard.
 ## TASK 7 — The rehearsed 3-minute demo + the recording. [status: BEAT SHEET + TRANSCRIPTS DONE] — owner: all
 
 > **Update 2026-11-12.** `DEMO.md` is the rehearsed 5-beat, 3-minute sheet — each beat
-> mapped to a rubric row with its command, payoff, and a captured fallback. Recordings
-> committed under `apps/cli/demo/recordings/`: `scope-check.txt` (10/10, deterministic),
-> `cold-run.trace.txt` (honest — grounding degrades under the 429, loop still completes
-> with a real finding), `report.sample.md` (the signed report). The "demo held hostage
-> to a live run" failure mode is now covered for the model-free beats. **Still open:**
+> mapped to a rubric row with its command and payoff. The text-transcript recordings
+> that originally backed this (`scope-check.txt`, `cold-run.trace.txt`,
+> `report.sample.md`) have since been removed; the beats themselves are reproducible
+> straight from the commands in `DEMO.md`. **Still open:**
 > a real _screen/video_ recording (media, not text), and live captures of the two
 > quota-gated beats (Tavily causing a finding; the budget-cap halt, which needs model
 > spend to accrue) — both ride on the TASK 8 quota decision.
@@ -361,7 +361,7 @@ final pass that a judge will actually grade against: confirm the README quicksta
 clean on a fresh clone, confirm the rubric map in `§4` matches what the code actually
 does today (several rows are aspirational until TASKS 1–2 land), and make sure the
 "test/measurement evidence" the brief asks for points a judge straight at the frozen
-`apps/cli/demo/` ablation pair.
+grounded/ungrounded ablation numbers in `DEMO.md`.
 
 **Acceptance test.** A fresh clone, `pnpm install`, follow the README, and reach a
 running trace without tribal knowledge. Every `§4` rubric row is either true in code or
