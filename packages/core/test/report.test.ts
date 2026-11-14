@@ -4,6 +4,8 @@ import { toMarkdown } from "../src/report/generate.js";
 
 const sqli: Finding = {
   id: "1",
+  foundAt: "",
+  scopeId: "",
   title: "SQL injection at /rest/products/search",
   technique: "sql injection",
   severity: "critical",
@@ -21,6 +23,8 @@ const sqli: Finding = {
 
 const bac: Finding = {
   id: "2",
+  foundAt: "",
+  scopeId: "",
   title: "Broken access control at /rest/admin/application-configuration",
   technique: "access-probe",
   severity: "high",
@@ -62,6 +66,8 @@ describe("toMarkdown — a report a consultant would sign", () => {
   it("escapes a fenced response body so it cannot break out of the code block", () => {
     const evil: Finding = {
       id: "3",
+      foundAt: "",
+      scopeId: "",
       title: "x",
       technique: "x",
       severity: "low",
@@ -82,6 +88,8 @@ describe("toMarkdown — a report a consultant would sign", () => {
   it("renders linked findings as an ordered attack chain", () => {
     const step1: Finding = {
       id: "s1",
+      foundAt: "",
+      scopeId: "",
       title: "SQL Injection — Authentication Bypass at http://x/",
       technique: "SQL Injection — authentication bypass",
       severity: "critical",
@@ -93,6 +101,8 @@ describe("toMarkdown — a report a consultant would sign", () => {
     };
     const step2: Finding = {
       id: "s2",
+      foundAt: "",
+      scopeId: "",
       title: "Broken Access Control — Privilege Escalation at http://x/",
       technique: "Authenticated admin access",
       severity: "high",

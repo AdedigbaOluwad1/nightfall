@@ -35,6 +35,11 @@ export class HttpSession implements Session {
   private async fetchGated(url: string, init?: RequestInit): Promise<Response> {
     let currentUrl = url;
     let currentInit: RequestInit = { ...init, redirect: "manual" };
+    // Fail safe against a hostile/slow target (slow-loris, honeypot that stalls):
+    // bound connect+headers per hop so an automated run can never hang on a
+    // single request. A timeout aborts, surfaces as a transient transport error,
+    // and the loop recovers (bounded retry → abandon) rather than stalling.
+    const timeoutMs = Number(process.env.NF_HTTP_TIMEOUT_MS ?? "20000");
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const decision = this.gate.check(currentUrl);
@@ -43,7 +48,17 @@ export class HttpSession implements Session {
         throw new Error(`blocked by scope gate: ${decision.reason}`);
       }
 
-      const res = await this.fetch(currentUrl, currentInit);
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), timeoutMs);
+      let res: Response;
+      try {
+        res = await this.fetch(currentUrl, { ...currentInit, signal: ac.signal });
+      } catch (err) {
+        if (ac.signal.aborted) throw new Error(`request timed out after ${timeoutMs}ms`);
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
       const location = res.headers.get("location");
       if (!REDIRECT_STATUS.has(res.status) || !location) return res;
 

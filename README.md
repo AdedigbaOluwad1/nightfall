@@ -103,5 +103,6 @@ How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL
 - [NIGHTFALL.md](./NIGHTFALL.md) — project overview and how each requirement is met.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — full system design.
 - [AUTHORIZATION.md](./AUTHORIZATION.md) — scope policy and safety.
+- [SAFETY.md](./SAFETY.md) — trust model: fail-safe, attributability, no new risk.
 - [STATE_MACHINES.md](./STATE_MACHINES.md) — state machines + reliability invariants.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — branching, PR flow, commit style, CI rules.

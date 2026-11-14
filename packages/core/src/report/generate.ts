@@ -5,6 +5,8 @@ export interface ReportMeta {
   target: string;
   objective?: string;
   runId?: string;
+  /** Content hash of the authorizing scope — chain-of-custody for the report. */
+  scopeId?: string;
   haltedBy?: HaltReason;
   costUsd?: number;
   generatedAt?: Date;
@@ -119,6 +121,7 @@ export function toMarkdown(findings: Finding[], meta: ReportMeta | string): stri
   header.push(`**Date:** ${when}`);
   const runBits: string[] = [];
   if (m.runId) runBits.push(`run \`${m.runId}\``);
+  if (m.scopeId) runBits.push(`scope \`${m.scopeId}\``);
   if (m.haltedBy) runBits.push(`stopped: ${m.haltedBy}`);
   if (m.costUsd !== undefined) runBits.push(`model spend: $${m.costUsd.toFixed(4)}`);
   if (runBits.length > 0) header.push(`**Run:** ${runBits.join(" · ")}`);

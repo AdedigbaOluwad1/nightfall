@@ -25,6 +25,11 @@ beforeAll(async () => {
       res.end();
       return;
     }
+    if (req.url === "/slow") {
+      // Never send headers — a stalling/slow-loris target. The client must time
+      // out and abort rather than hang. Socket is force-closed in afterAll.
+      return;
+    }
     res.writeHead(200);
     res.end("ok");
   });
@@ -33,6 +38,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
   server.close();
 });
 
@@ -57,5 +63,18 @@ describe("HttpSession — redirects are re-gated", () => {
     await expect(
       session().request({ url: `http://localhost:${port}/evil-redirect` }),
     ).rejects.toThrow(/blocked by scope gate/);
+  });
+
+  it("times out (aborts) on a stalling target instead of hanging", async () => {
+    const prev = process.env.NF_HTTP_TIMEOUT_MS;
+    process.env.NF_HTTP_TIMEOUT_MS = "150";
+    try {
+      await expect(session().request({ url: `http://localhost:${port}/slow` })).rejects.toThrow(
+        /timed out/,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.NF_HTTP_TIMEOUT_MS;
+      else process.env.NF_HTTP_TIMEOUT_MS = prev;
+    }
   });
 });

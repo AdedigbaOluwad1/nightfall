@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { bus } from "../events/bus.js";
 import type { Finding } from "../evidence/models.js";
@@ -76,13 +77,15 @@ function objectiveTokens(objective: string): string[] {
     .filter((t) => t.length > 2 && !STOP.has(t));
 }
 
-function toFinding(item: WorkItem, result: AttemptResult): Finding {
+function toFinding(item: WorkItem, result: AttemptResult, scopeId: string): Finding {
   const profile = findingProfile(item.technique, item.cve);
   const cveTag = item.cve ? ` (${item.cve})` : "";
   const produced = result.discovered?.map((a) => a.label);
   return {
     id: crypto.randomUUID(),
     title: `${profile.name} at ${item.url}${cveTag}`,
+    foundAt: new Date().toISOString(),
+    scopeId,
     technique: item.technique,
     severity: profile.severity,
     cvss: profile.cvss,
@@ -104,7 +107,17 @@ function toFinding(item: WorkItem, result: AttemptResult): Finding {
  * is hit. Recovery (retry | escalate | abandon | pivot) is deterministic, so
  * a cold target behaves like the rehearsed one.
  */
+/**
+ * Content hash of the authorizing scope, short form. Stamped on every finding so
+ * the audit trail proves which authorization governed which result — the scope
+ * can't be edited after the fact without the hash no longer matching.
+ */
+export function scopeId(scope: ScopeFile): string {
+  return createHash("sha256").update(JSON.stringify(scope)).digest("hex").slice(0, 12);
+}
+
 async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise<void> {
+  const sid = scopeId(scope);
   const primary = deps.session;
   await primary.login().catch(() => undefined); // an unauthenticated session is still valid
 
@@ -255,7 +268,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
       }
 
       if (result.ok) {
-        const finding = toFinding(item, result);
+        const finding = toFinding(item, result, sid);
         deps.record(finding);
         state.findings++;
         bus.emit("finding.confirmed", {
@@ -451,7 +464,12 @@ export async function runLoop(
   bus.on("scope.blocked", onBlocked);
   bus.on("gateway.call", onCost);
 
-  bus.emit("run.start", { runId, target: scope.target, objective: scope.objective });
+  bus.emit("run.start", {
+    runId,
+    target: scope.target,
+    objective: scope.objective,
+    scopeId: scopeId(scope),
+  });
 
   const deps = buildDeps(scope, gate, gateway, override);
   try {

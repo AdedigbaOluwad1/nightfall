@@ -32,7 +32,7 @@ export {
   setHypothesisGateway,
   ungroundedLookup,
 } from "./hypothesis/tavilyClient.js";
-export { runLoop } from "./loop/agent.js";
+export { runLoop, scopeId } from "./loop/agent.js";
 export { type ReportMeta, toMarkdown } from "./report/generate.js";
 export { ScopeGate } from "./scope/gate.js";
 export { loadScope } from "./scope/parser.js";
