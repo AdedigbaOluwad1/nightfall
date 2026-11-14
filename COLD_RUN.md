@@ -235,6 +235,15 @@ Zero broken-access false positives in Mutillidae's twelve (the authenticated-BAC
 privilege-surface precision work held), zero crashes, and the cloud model drove the
 full recovery vocabulary with no parse errors — so the backend swap was clean too.
 
+> **Correction (added later).** That "9× SQLi" was wrong. Widening detection to the
+> whole body was right, but it was paired with a loose error pattern that matched the
+> bare word "SQL" — so Mutillidae's own menus inflated the SQLi count. A later audit
+> (see _The false positives hiding in the counts_ at the end of this file) put the
+> real figure at **6 SQLi**; the XSS and LFI, which key on a unique injected marker or
+> on leaked file contents, were never affected. We leave the original number visible
+> and corrected rather than silently edited, because the whole point of this file is
+> not trusting a count until you have read what produced it.
+
 This is the **third** real bug a cold/unseen target has exposed by _reading what the
 agent did_ rather than trusting a number — here, trusting a _zero_. A small
 follow-on: the command-injection probe prefixes a routable host
@@ -333,28 +342,90 @@ nothing; `id='` **with** `Submit` confirmed it). Recon now captures the form's f
 control set with defaults (`formData`), and an injection **resubmits the complete
 form** with a single payload override — exercising the sink as a browser would.
 
-**Result — the zeros were the bug, not the target.** Credentialed, on the cloud
-backend, no code tuned to either app:
+**Result — the login was genuinely broken.** Credentialed login now authenticates on
+every shape we threw at it, each a silent zero before:
 
-| Lab   | Login shape                                | Before     | After (credentialed)                       |
-| ----- | ------------------------------------------ | ---------- | ------------------------------------------ |
-| DVWA  | hidden `user_token` + `<input name=Login>` | 0 (silent) | **12** — 9× SQLi, 2× XSS, 1× cmdi          |
-| bWAPP | `<button name=form value=submit>`          | 0 (silent) | **6** SQLi across 6 distinct authed routes |
+| Lab     | Login shape                                  | Login before → after     |
+| ------- | -------------------------------------------- | ------------------------ |
+| DVWA    | hidden `user_token` + `<input name=Login>`   | silent fail → **tier 1** |
+| bWAPP   | `<button name=form value=submit>`            | silent fail → **tier 1** |
+| WebGoat | Spring Security form, no submit btn, no CSRF | auth wall → **tier 1**   |
 
-Two independent login shapes, both silent zeros before, both authenticating and
-landing findings now — bWAPP's six on pages only reachable with a live session
-(`portal`, `password_change`, `user_extra`, `security_level_set`, `reset`). This is
-the **fourth** real bug a skeptical re-read of a number exposed, and the costliest
-had it shipped: not a crash, not a false positive, but a false _negative dressed as
-a clean result_ — the one failure mode an honest zero is supposed to rule out.
+This is the **fourth** real bug a skeptical re-read of a number exposed, and the
+costliest had it shipped: not a crash, not a false positive, but a false _negative
+dressed as a clean result_ — the one failure mode an honest zero is supposed to rule
+out. WebGoat, named in an earlier draft as "still not run," now authenticates too.
+
+**But the first counts this unblocked were themselves wrong.** An earlier draft of
+this section put the credentialed results at "DVWA 12 (9 SQLi…)" and "bWAPP 6 SQLi."
+Reading what produced those numbers — the discipline this whole file is about —
+showed most were false positives from a separate detector bug. The honest figures,
+and how we found them, are the next section. We leave the inflated draft numbers
+named here rather than quietly overwritten, because pretending the first pass was
+clean is exactly the self-deception the rest of this file argues against.
 
 **Operator setup (provisioning, not source-reading):** DVWA — run `setup.php` to
 create the DB, log in `admin`/`password`, security level defaults to low; bWAPP —
-install via `/install.php?install=yes`, log in `bee`/`bug`. Same credentialed
-black-box category as every setup above.
+install via `/install.php?install=yes`, log in `bee`/`bug`; WebGoat — register a user
+via `/WebGoat/registration`, log in with it. Same credentialed black-box category as
+every setup above.
 
-> **Still not run: WebGoat.** It stays at 0 in the table above, and we are **not**
-> claiming that as honest yet — WebGoat is a lesson-based Spring app with interactive,
-> stateful auth, a genuinely hard target for a flat black-box crawler and a different
-> problem from the login-shape bug just fixed. Named here, not quietly counted as a
-> graceful miss.
+## The false positives hiding in the counts
+
+Running WebGoat credentialed (login now working) returned **one** finding: a
+_critical_ SQL injection on `start.mvc`. It was wrong, and chasing why overturned
+several numbers above.
+
+> **Intervention point.** A critical on the first try against a famously-hard target
+> is the result you _want_ to believe. Three facts said don't: `start.mvc` is a menu
+> shell that ignores the injected parameter; the Tier-1 (raw HTTP) probe found
+> nothing and only Tier 2 (the rendered SPA DOM) "confirmed"; and `start.mvc`
+> returned **byte-identical** bodies for the payload, a benign value, and no value at
+> all. An injection that changes nothing in the response is not an injection.
+
+**Root cause.** The error-based SQLi check matched a pattern that included the bare
+word `sql`. Scanned across the whole response body — and, on Tier 2, across a
+JavaScript-rendered DOM — that matched the application's own content, not a leaked
+error. WebGoat is a security-teaching app; its lesson menu literally lists
+`1.sql.injection.title`. The word "SQL" in a nav link became "evidence" of SQL
+injection.
+
+**The audit.** If a menu naming "SQL Injection" can confirm SQLi, every HTML lab
+with such a menu was suspect. Re-running each with the signal that the fire _was_
+caused by the payload:
+
+| Lab        | Earlier count | Real (true-positive) count | False positives were…                                                                            |
+| ---------- | ------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
+| WebGoat    | 1 SQLi        | **0**                      | the lesson menu                                                                                  |
+| DVWA       | 9 SQLi        | **2 SQLi**                 | 7 pages whose only "error" was the nav (home, CSP, the _cmdi_ page, `sqli_blind`, two XSS pages) |
+| bWAPP      | 6 SQLi        | **0**                      | all 6 — the bug-selection dropdown (38 "SQL Injection" strings on `portal.php` alone)            |
+| Mutillidae | 9 SQLi        | **6 SQLi**                 | 3 menu matches                                                                                   |
+| DVGA/VAmPI | 2 / 1         | **2 / 1** (unchanged)      | none — a JSON/GraphQL API has no nav menu                                                        |
+
+The XSS and traversal/LFI findings were never affected: they key on a _unique
+injected marker_ reflected un-escaped, or on leaked host-file contents — neither of
+which is a word the app says about itself.
+
+**The fix (shipped).** Two layers, in `loop/actions.ts`:
+
+1. **Real error signatures, not the topic word.** `SQL_ERROR` now matches only text a
+   database or driver emits on failure (`error in your SQL syntax`, `SQLITE_ERROR`,
+   `ORA-…`, `sqlite3.OperationalError`, `unrecognized token`, …), never the bare word
+   "sql" or "postgres". Validated against the real leaked errors from DVGA, VAmPI,
+   DVWA, Mutillidae and Juice Shop (all still match) and against the menus that fooled
+   it (none match).
+2. **A benign-control differential.** Every presence-based signal — a DB error, leaked
+   file contents, shell output — now re-sends the same request with a _benign_ value
+   and confirms the signal is **absent** from that control. A signal that appears
+   regardless of input is application content, not payload-caused evidence, and no
+   longer confirms. Spot-proven live: Mutillidae's `user-info.php` leaks
+   `error in your SQL syntax` under a quote (at byte > 2 KB, so whole-body detection
+   is still doing its job) and comes back clean under a benign value.
+
+**The honest post-fix scorecard**, every finding verified payload-caused: DVWA **5**
+(2 SQLi, 2 XSS, 1 cmdi) · Mutillidae **14** (6 SQLi, 7 XSS, 1 LFI) · DVGA **2** ·
+VAmPI **1** · bWAPP **0** · WebGoat **0**. bWAPP's zero is now honest in a second
+sense: its real injectable pages sit behind a bug-selection dropdown the crawler
+doesn't drive, so they were never reached — a coverage gap, named, not a graceful
+miss. This is the **fifth** bug a cold/unseen target exposed by reading the agent's
+work, and the only one where the number that lied was a _finding_, not a zero.

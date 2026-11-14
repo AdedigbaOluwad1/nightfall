@@ -161,11 +161,13 @@ These were on this list; we fixed them rather than excuse them.
   password field still present), emits `session.login{ok}`, and throws on failure;
   the CLI renders a green `authenticated` or a red `LOGIN FAILED — probing continues
   UNAUTHENTICATED`, so a broken login can never again masquerade as a clean run. The
-  Tier-2 browser session got the same verification. Proven on two independent login
-  shapes that were both silent zeros before — DVWA (hidden `user_token` + a named
-  submit input) and bWAPP (a `<button name=form value=submit>`), each now
-  authenticating and landing findings (`httpSession.ts`, `browserSession.ts`,
-  `agent.ts`, `render.ts`).
+  Tier-2 browser session got the same verification. Proven on three independent login
+  shapes that were silent zeros before — DVWA (hidden `user_token` + a named submit
+  input), bWAPP (a `<button name=form value=submit>`), and WebGoat (a Spring Security
+  form, no submit button, no CSRF) — each of which now authenticates (`httpSession.ts`,
+  `browserSession.ts`, `agent.ts`, `render.ts`). The _findings_ a credentialed run then
+  lands are a separate matter: see the false-positive correction below, which is the
+  reason the counts here are smaller than an earlier draft claimed.
 - **Isolated-field injection → complete-form resubmission.** The injection battery
   sent only the one field it was testing, so an app gating on a sibling control saw
   an incomplete post and did nothing (DVWA's SQLi runs only with `?Submit=Submit`
@@ -173,8 +175,27 @@ These were on this list; we fixed them rather than excuse them.
   flaw). Recon now captures the form's full control set with default values
   (`formData`), and an injection **resubmits the complete form** with the single
   payload override — so a probe exercises the sink exactly as a browser would. This
-  is what took credentialed DVWA from 0 to 12 findings (`recon`, `actions.ts`,
-  `agent.ts`).
+  is what took credentialed DVWA from 0 to its **5 real findings** (2 SQLi, 2 XSS, 1
+  command injection, each on a genuinely vulnerable page) once the false positives
+  below were removed (`recon`, `actions.ts`, `agent.ts`).
+- **A leaked-DB-error signal matched the _topic word_ "SQL" → real error signatures
+  plus a benign control.** The error-based SQLi check matched a pattern that included
+  the bare word `sql`. Scanned across a whole page body (and, on Tier 2, a rendered
+  SPA DOM), that matched application content, not a leaked error: a nav menu or
+  dropdown listing "SQL Injection", a security-teaching app's lesson titles. It
+  produced **critical false positives** — the exact over-claim §2 and SAFETY.md §7
+  promise never to make. A WebGoat run surfaced it; a re-audit found it had inflated
+  several counts (DVWA 7 of 9 SQLi, bWAPP all 6, Mutillidae 3 — every one a page whose
+  only "evidence" was the menu naming SQL). Two fixes: the pattern now matches only
+  real engine/driver error signatures (`error in your SQL syntax`, `SQLITE_ERROR`,
+  `ORA-…`, `sqlite3.OperationalError`, …), never the subject word; and every
+  presence-based signal (DB error, leaked file, shell output) now confirms only when
+  it is **absent from an otherwise-identical request carrying a benign value**, so
+  content that is present regardless of input can never be read as payload-caused
+  evidence. Real findings are unaffected — DVGA/VAmPI (sqlite3), DVWA `sqli`/`brute`
+  and Mutillidae `user-info` (MySQL) still confirm, each verified present under the
+  payload and absent under the control (`actions.ts` `SQL_ERROR`,
+  `signalIsPayloadCaused`). See COLD_RUN.md.
 
 ## What our testing still can't substitute for
 
