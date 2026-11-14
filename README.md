@@ -38,6 +38,41 @@ The default `run` drives the full autonomous loop against a lab (bring one up wi
 It writes findings to `nightfall-findings.jsonl` and auto-writes a Markdown report
 beside it.
 
+## Testing an auth-gated target
+
+To test a login-gated app, add a `credentials` block to the scope file. The agent fetches
+the login page, **auto-detects the form** — carrying any hidden CSRF token and the submit
+control verbatim — posts the credentials, and then **verifies the session actually took**:
+the trace shows a green `authenticated` or a red `LOGIN FAILED — probing continues
+UNAUTHENTICATED`, so a broken login is never silently reported as an honest clean scan.
+
+```yaml
+# add to your scope file (array — one entry per auth boundary)
+credentials:
+  - boundary: user # a logical auth-boundary label; does NOT widen scope
+    loginUrl: "http://localhost:8081/login.php"
+    username: "admin"
+    password: "password"
+```
+
+A ready-to-run example ships at
+[`packages/core/src/scope/example.auth.scope.yaml`](./packages/core/src/scope/example.auth.scope.yaml)
+(credentialed DVWA):
+
+```bash
+docker compose -f labs/docker-compose.yml up -d dvwa
+# one-time: open http://localhost:8081/setup.php and click "Create / Reset Database"
+pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.auth.scope.yaml
+```
+
+Credentials authenticate an authorized test; they never relax the deny-by-default gate.
+The login flow generalises across form shapes with no per-app tuning — a hidden-token +
+named-submit form (DVWA), a `<button name=…>` submit (bWAPP), and a Spring Security form
+with no submit button and no CSRF (WebGoat) all authenticate; a JS-driven login escalates
+to the Tier-2 headless browser, which verifies the session the same way. Once in, every
+probe runs with the authenticated session — these are the `credentialed` rows in
+[Results across labs](#results-across-labs).
+
 ## Demo beats (reproducible)
 
 The two model-free beats run from a clean clone with no lab and no API quota — each is
@@ -88,6 +123,13 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.
   grounding off, the bare model still cites CVEs but **0/2 are valid** (hallucinated).
   Both runs reach the objective via the deterministic chain — grounding is what keeps
   the expanding surface real and current. Measured by `ablate` (active-disclosure row).
+- **The re-grounding is a generic mechanism, not Juice-Shop logic.** Any confirmed
+  probe that surfaces a new `component@version` re-queries Tavily for it (deduped,
+  budget-guarded) — there is no per-lab branch (`loop/agent.ts`). What feeds it
+  mid-chain today is one disclosure extractor: the injection error-page banner (the
+  `(framework version)` shape an error leaks). Passive recon still fingerprints headers,
+  cookies, and `generator` meta generically at the start; broadening the set of
+  _mid-chain_ leak patterns is additive and named in [LIMITATIONS.md](./LIMITATIONS.md).
 
 How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL.md).
 
@@ -113,9 +155,11 @@ with their specific cause, not a vague "gated".
 
 Thirty confirmed findings across seven labs, plus two honest zeros — each a named,
 specific limitation, not a shared "gated" label. The per-lab narrative — including the
-one login-flow bug that once hid behind three of these labs, and the nav-menu
-false-positive class since removed from the SQLi detector — is in
-[COLD_RUN.md](./COLD_RUN.md).
+one login-flow bug that once hid behind three of these labs, the nav-menu
+false-positive class since removed from the SQLi detector, and how DVGA went from a
+named "no GraphQL support" gap to two findings once introspection-driven GraphQL
+probing [shipped](./COLD_RUN.md#api-surface--rest-discovery-and-the-graphql-frontier) —
+is in [COLD_RUN.md](./COLD_RUN.md).
 
 ## Layout
 

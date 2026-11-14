@@ -121,6 +121,34 @@ the same oracle shape the boolean-SQLi check already uses.
 **The tradeoff.** We under-claim: one honest critical beats one honest critical
 buried under five wrong highs. Unauthenticated BAC confirmation is unaffected.
 
+## 5. Mid-chain re-grounding keys on one disclosure pattern
+
+**What breaks.** The agent re-grounds live when a probe forces the stack to leak a new
+`component@version` mid-run (an injection error page naming the framework), re-querying
+Tavily so the expanding surface stays current. The re-grounding **loop itself is generic**
+— any confirmed probe that emits a new fingerprint artifact re-grounds it, deduped and
+budget-guarded, with no per-lab branch (`loop/agent.ts`). What is narrow is the set of
+_mid-chain disclosure extractors_ that feed it: today there is **one**, the error-page
+framework banner matching the `(Name version)` shape (`actions.ts` `bannerArtifact`,
+`FRAMEWORK_BANNER`). A stack that leaks its version mid-chain in a different shape — prose
+in an error body, a `Server` header re-appearing on a later hop — would not currently
+re-fire the re-grounding, even though passive recon fingerprints those same signals
+generically at the start of the run.
+
+**Why.** The one shape we implemented is the one a cold run actually produced (Juice
+Shop's Express 500 page). We did not want to assert broad "any version string re-grounds"
+coverage the code does not yet have — that would be the same over-claim the rest of this
+file refuses.
+
+**What a fix takes.** Additional mid-chain extractors (a `Server`/`X-Powered-By` re-read
+on later responses, a prose-version matcher), each emitting the same `fingerprint`
+artifact the generic loop already consumes. Additive — it does not touch the re-grounding
+mechanism.
+
+**The tradeoff.** We name the mid-chain coverage precisely rather than let a single
+demonstrated case read as universal. The generic part (the re-grounding loop) is real;
+the breadth of what trips it mid-run is honestly bounded.
+
 ## Closed since the first audit
 
 These were on this list; we fixed them rather than excuse them.
