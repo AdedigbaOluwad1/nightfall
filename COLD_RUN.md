@@ -274,9 +274,21 @@ tuned to VAmPI.
 > is back to 12 (9 SQLi, 2 XSS, 1 LFI) and VAmPI holds at 1 — the same re-read-the-
 > result discipline that found the three bugs above, applied to our own change.
 
-**The next frontier, named not claimed.** We also stood up **DVGA** (Damn Vulnerable
-GraphQL App). GraphQL exposes a single POST `/graphql` endpoint enumerated by
-_introspection_, not OpenAPI — so our spec crawl finds nothing (**0 endpoints**,
-confirmed). GraphQL injection (introspect the schema, probe query-argument sinks) is
-the next deliberate, read-only increment, listed in
-[LIMITATIONS.md](./LIMITATIONS.md) §3 rather than quietly claimed.
+**The next frontier — then closed.** We stood up **DVGA** (Damn Vulnerable GraphQL
+App). GraphQL exposes a single POST `/graphql` endpoint enumerated by _introspection_,
+not OpenAPI — so our spec crawl found nothing (**0 endpoints**, confirmed). Rather
+than only name it, we built the read-only increment: recon probes the GraphQL paths
+with a `{__typename}` query, introspects a GraphQL-shaped reply, and enumerates every
+**Query** field's string arguments (never a Mutation — read-only by construction),
+deriving a valid selection set from each field's return type. The same battery then
+probes them. **Result:** recon went from 0 endpoints to **8 Query-field probes**, and
+the existing checks confirmed **two real criticals** — error-based SQL injection on
+`pastes(filter)` (an `sqlite3.OperationalError` leaking the live `SELECT ... FROM
+pastes`) and command injection on `systemDebug(arg)` (`uid=1000(dvga)` output) — with
+no code tuned to DVGA. One bug surfaced and fixed in the same pass: a field returning
+a **union** (`search → [SearchResult]`) was given an empty selection, making its probe
+query invalid; unions now select `__typename`, which is valid on any composite type.
+
+The remaining named gap is **JSON/body injection on state-changing verbs** (POST/PUT/
+DELETE, and GraphQL mutations) — held outside the read-only line until a reviewed
+body-injection increment, per [LIMITATIONS.md](./LIMITATIONS.md) §3.

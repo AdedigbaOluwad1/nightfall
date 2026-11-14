@@ -85,13 +85,20 @@ does not depend on the lab being disposable. Two such additions:
   still read-only (GET only; state-changing bodies are the next increment, below).
   Validated against VAmPI (Python/Flask JSON API): 0 discovered endpoints → the two
   path-param routes → a real critical SQL injection on `/users/v1/{username}`.
+- **GraphQL surface via introspection.** A GraphQL API is a single POST endpoint
+  whose schema is read by introspection, not OpenAPI. Recon probes the conventional
+  GraphQL paths with a read-only `{__typename}` query, introspects a GraphQL-shaped
+  reply, and enumerates every **Query** field's string arguments as injectable
+  inputs (a valid selection set derived from each field's return type). Query only,
+  never Mutation — read-only by construction. The same battery then probes them.
+  Validated against DVGA: 0 discovered endpoints → 8 Query-field probes → two real
+  criticals, error-based SQLi on `pastes(filter)` and command injection on
+  `systemDebug(arg)`, with no code tuned to DVGA.
 
-**Still outside the set (named, not hidden).** Two API shapes are _not_ yet
-probed, both deliberate next increments rather than claims: **(a) GraphQL** — a
-single POST `/graphql` endpoint enumerated by introspection, not OpenAPI, so our
-spec crawl finds nothing (confirmed against DVGA: 0 endpoints). **(b) JSON/body
-injection on POST/PUT/DELETE** — these are state-changing, so the read-only line
-holds until a reviewed body-injection increment lands. Each is additive to the
+**Still outside the set (named, not hidden).** **JSON/body injection on POST/PUT/
+DELETE** is not yet probed: those verbs are state-changing, so the read-only line
+holds until a reviewed body-injection increment lands. (A GraphQL _mutation_ is in
+this same category and is deliberately never enumerated.) This is additive to the
 same closed `switch`, not a flag flip.
 
 ## 4. Broken access control is not confirmed on an authenticated run
