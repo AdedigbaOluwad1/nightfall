@@ -155,9 +155,11 @@ with their specific cause, not a vague "gated".
 
 Thirty confirmed findings across seven labs, plus two honest zeros — each a named,
 specific limitation, not a shared "gated" label. The per-lab narrative — including the
-one login-flow bug that once hid behind three of these labs, and the nav-menu
-false-positive class since removed from the SQLi detector — is in
-[COLD_RUN.md](./COLD_RUN.md).
+one login-flow bug that once hid behind three of these labs, the nav-menu
+false-positive class since removed from the SQLi detector, and how DVGA went from a
+named "no GraphQL support" gap to two findings once introspection-driven GraphQL
+probing [shipped](./COLD_RUN.md#api-surface--rest-discovery-and-the-graphql-frontier) —
+is in [COLD_RUN.md](./COLD_RUN.md).
 
 ## Layout
 
