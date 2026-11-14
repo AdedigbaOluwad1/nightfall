@@ -1,4 +1,5 @@
 import type { Severity } from "../events/types.js";
+import type { GraphQLProbe } from "../recon/index.js";
 import type { Session, SessionRequest, SessionResponse } from "../session/index.js";
 import { type Artifact, type AttackContext, latestArtifact, type SeedStep } from "./context.js";
 
@@ -34,6 +35,8 @@ export interface AttemptOpts {
   method?: "GET" | "POST";
   /** Named injectable form fields recon captured, for a form-aware probe. */
   fields?: string[];
+  /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
+  graphql?: GraphQLProbe;
   /** The session carries operator-provided credentials (an authenticated run).
    *  Reaching an authorized resource is then expected, not broken access. */
   authenticated?: boolean;
@@ -500,6 +503,23 @@ function injectionRequest(
   value: string,
   defaultKey = "q",
 ): { req: SessionRequest; label: string } {
+  // A GraphQL Query-field argument: build `{ field(fixedArgs arg: "payload") sel }`
+  // and POST it as a query (never a mutation — read semantics). The payload is
+  // escaped as a GraphQL string literal via JSON string escaping.
+  if (opts.graphql) {
+    const g = opts.graphql;
+    const literal = JSON.stringify(value).slice(1, -1);
+    const query = `{ ${g.field}(${g.fixedArgs}${g.arg}: "${literal}")${g.selection} }`;
+    return {
+      req: {
+        url: opts.url,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query }),
+      },
+      label: `POST ${opts.url}  graphql ${g.field}(${g.arg})`,
+    };
+  }
   // An OpenAPI path parameter ({username}) is injected by substituting the payload
   // into that path segment, with any other template filled by a benign placeholder
   // so the route still resolves. This is always a GET (read semantics).
@@ -565,6 +585,7 @@ function isMutatingSurface(opts: AttemptOpts): boolean {
 // other. Nothing to go on → a single undefined target, which falls back to the
 // conventional key on the search surface (the first target's shape).
 function candidateFields(opts: AttemptOpts): Array<string | undefined> {
+  if (opts.graphql) return [`${opts.graphql.field}.${opts.graphql.arg}`];
   const fields = opts.fields ?? [];
   if (opts.method === "POST") return fields.length > 0 ? fields.slice(0, 3) : [undefined];
   const out: Array<string | undefined> = [...fields];

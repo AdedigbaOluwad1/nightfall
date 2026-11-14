@@ -13,12 +13,31 @@ import {
 
 export type { Fingerprint } from "./fingerprint.js";
 
+/**
+ * How to drive one injectable argument of a GraphQL Query field. The endpoint is
+ * the GraphQL URL (POST); a probe builds `{ <field>(<fixedArgs><arg>: "payload")
+ * <selection> }`. Only Query-type fields are ever described here — never a
+ * Mutation — so a GraphQL probe is read-only by construction.
+ */
+export interface GraphQLProbe {
+  /** The Query field, e.g. `systemDebug`. */
+  field: string;
+  /** The String argument the payload is injected into, e.g. `arg`. */
+  arg: string;
+  /** A selection set the field needs to be valid, e.g. ` { id }`, or "" for a scalar. */
+  selection: string;
+  /** Other required (NON_NULL) args pre-rendered with benign defaults, e.g. `host: "1", `. */
+  fixedArgs: string;
+}
+
 export interface ReconEndpoint {
   url: string;
   method: "GET" | "POST";
   hasParams: boolean;
   /** Named, injectable form fields (text-like inputs + textareas), if a form. */
   fields?: string[];
+  /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
+  graphql?: GraphQLProbe;
 }
 
 export interface ReconResult {
@@ -156,6 +175,15 @@ export async function recon(
     bus.emit("recon.found", { endpoint: ep.url });
   }
 
+  // GraphQL surface: a single POST endpoint whose schema is read by introspection,
+  // not OpenAPI. If one answers, enumerate its Query fields' string arguments as
+  // injectable inputs — Query only, never Mutation, so this stays read-only.
+  for (const ep of await graphqlEndpoints(session, gate, scope, origin)) {
+    const key = `${ep.method} ${ep.url} ${ep.graphql?.field}.${ep.graphql?.arg}`;
+    if (!endpoints.has(key)) endpoints.set(key, ep);
+    bus.emit("recon.found", { endpoint: `${ep.url} (graphql: ${ep.graphql?.field})` });
+  }
+
   // Real-tool enrichment — best-effort, never on the critical path.
   for (const fp of await techDetect(origin, gate)) fingerprints.push(fp);
 
@@ -284,6 +312,160 @@ function specToEndpoints(spec: unknown, origin: string, gate: ScopeGate): ReconE
     out.push({ url, method: "GET", hasParams: true, fields });
   }
   return out;
+}
+
+/** Conventional locations a GraphQL endpoint answers on. */
+const GRAPHQL_PATHS = ["/graphql", "/api/graphql", "/v1/graphql", "/query", "/gql"];
+
+/** Cap on GraphQL (field, arg) probes ingested from one schema. */
+const GQL_PROBE_LIMIT = 25;
+
+/** The introspection query: every type with its fields, their args, and return types. */
+const INTROSPECTION_QUERY =
+  "{ __schema { queryType { name } types { kind name fields { name args { name type { kind name ofType { kind name ofType { kind name } } } } type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } } }";
+
+interface GqlTypeRef {
+  kind?: string;
+  name?: string | null;
+  ofType?: GqlTypeRef | null;
+}
+interface GqlArg {
+  name?: string;
+  type?: GqlTypeRef;
+}
+interface GqlField {
+  name?: string;
+  args?: GqlArg[];
+  type?: GqlTypeRef;
+}
+interface GqlType {
+  kind?: string;
+  name?: string;
+  fields?: GqlField[] | null;
+}
+
+/** Unwrap NON_NULL/LIST wrappers to the underlying named type. */
+function unwrapType(t: GqlTypeRef | undefined): GqlTypeRef | undefined {
+  let cur = t;
+  for (let i = 0; i < 8 && cur?.ofType; i++) cur = cur.ofType ?? undefined;
+  return cur;
+}
+
+/** A benign GraphQL literal to satisfy a required non-target argument, by scalar type. */
+function benignArg(name: string | undefined): string | undefined {
+  switch (name) {
+    case "Int":
+    case "Float":
+      return "1";
+    case "Boolean":
+      return "true";
+    case "String":
+    case "ID":
+      return '"1"';
+    default:
+      return undefined;
+  }
+}
+
+/** A selection set the field's return type needs to be a valid query, e.g. ` { id }`. */
+function selectionFor(ret: GqlTypeRef | undefined, byName: Map<string, GqlType>): string {
+  const named = unwrapType(ret);
+  if (!named?.name) return "";
+  const t = byName.get(named.name);
+  // A scalar or enum needs no selection; a composite (object/interface/union) does.
+  if (!t || (t.kind !== "OBJECT" && t.kind !== "INTERFACE" && t.kind !== "UNION")) return "";
+  for (const f of t.fields ?? []) {
+    const fk = unwrapType(f.type)?.kind;
+    if ((fk === "SCALAR" || fk === "ENUM") && f.name) return ` { ${f.name} }`;
+  }
+  // No scalar subfield (or a union, which has none): __typename is valid on any composite.
+  return " { __typename }";
+}
+
+/** Turn an introspected schema into GraphQL (field, string-arg) injection endpoints. */
+function schemaToProbes(schema: unknown, url: string): ReconEndpoint[] {
+  if (!schema || typeof schema !== "object") return [];
+  const s = schema as { queryType?: { name?: string }; types?: GqlType[] };
+  const queryName = s.queryType?.name;
+  const types = Array.isArray(s.types) ? s.types : [];
+  const byName = new Map<string, GqlType>();
+  for (const t of types) if (t.name) byName.set(t.name, t);
+  const queryType = queryName ? byName.get(queryName) : undefined;
+  if (!queryType?.fields) return [];
+  const out: ReconEndpoint[] = [];
+  for (const field of queryType.fields) {
+    if (out.length >= GQL_PROBE_LIMIT) break;
+    const args = field.args ?? [];
+    const stringArgs = args.filter((a) => unwrapType(a.type)?.name === "String");
+    if (stringArgs.length === 0 || !field.name) continue;
+    const selection = selectionFor(field.type, byName);
+    for (const target of stringArgs) {
+      if (out.length >= GQL_PROBE_LIMIT || !target.name) break;
+      let fixedArgs = "";
+      for (const other of args) {
+        if (other.name === target.name || !other.name) continue;
+        if (other.type?.kind !== "NON_NULL") continue; // only required args must be filled
+        const lit = benignArg(unwrapType(other.type)?.name ?? undefined);
+        if (lit) fixedArgs += `${other.name}: ${lit}, `;
+      }
+      out.push({
+        url,
+        method: "POST",
+        hasParams: true,
+        graphql: { field: field.name, arg: target.name, selection, fixedArgs },
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Discover a GraphQL API. Probe the conventional endpoints with a read-only
+ * `{__typename}` query (a query, never a mutation — so recon stays read-only); if
+ * one answers like GraphQL, introspect it and enumerate the Query fields' string
+ * arguments as injectable inputs. Every endpoint is gate-checked. Introspection
+ * being disabled, or any error, yields nothing rather than a throw.
+ */
+async function graphqlEndpoints(
+  session: Session,
+  gate: ScopeGate,
+  scope: ScopeFile,
+  origin: string,
+): Promise<ReconEndpoint[]> {
+  const candidates = new Set<string>([scope.target]);
+  for (const p of GRAPHQL_PATHS) candidates.add(origin + p);
+  for (const url of candidates) {
+    if (!gate.check(url).allowed) continue;
+    let probe: string;
+    try {
+      const r = await session.request({
+        url,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "{__typename}" }),
+      });
+      probe = r.body;
+    } catch {
+      continue;
+    }
+    if (!/"__typename"|"data"\s*:|graphql|must provide query/i.test(probe)) continue;
+    let schema: unknown;
+    try {
+      const r = await session.request({
+        url,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: INTROSPECTION_QUERY }),
+      });
+      const parsed = JSON.parse(r.body) as { data?: { __schema?: unknown } };
+      schema = parsed.data?.__schema;
+    } catch {
+      continue;
+    }
+    const endpoints = schemaToProbes(schema, url);
+    if (endpoints.length > 0) return endpoints;
+  }
+  return [];
 }
 
 /**

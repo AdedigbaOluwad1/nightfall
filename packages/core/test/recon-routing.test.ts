@@ -90,6 +90,82 @@ class SpecSession implements Session {
   async dispose(): Promise<void> {}
 }
 
+const GQL_SCHEMA = JSON.stringify({
+  data: {
+    __schema: {
+      queryType: { name: "Query" },
+      types: [
+        {
+          kind: "OBJECT",
+          name: "Query",
+          fields: [
+            {
+              name: "systemDebug",
+              args: [{ name: "arg", type: { kind: "SCALAR", name: "String" } }],
+              type: { kind: "SCALAR", name: "String" },
+            },
+            {
+              name: "pastes",
+              args: [{ name: "filter", type: { kind: "SCALAR", name: "String" } }],
+              type: { kind: "LIST", name: null, ofType: { kind: "OBJECT", name: "PasteObject" } },
+            },
+            { name: "health", args: [], type: { kind: "SCALAR", name: "String" } },
+          ],
+        },
+        {
+          kind: "OBJECT",
+          name: "PasteObject",
+          fields: [{ name: "id", type: { kind: "SCALAR", name: "ID" } }],
+        },
+      ],
+    },
+  },
+});
+
+class GqlSession implements Session {
+  readonly tier = 1 as const;
+  async login(): Promise<void> {}
+  async request(req: SessionRequest): Promise<SessionResponse> {
+    if (req.method === "POST") {
+      const body = req.body ?? "";
+      if (body.includes("__schema")) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: GQL_SCHEMA };
+      }
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: '{"data":{"__typename":"Query"}}',
+      };
+    }
+    return { status: 200, headers: { "content-type": "text/html" }, body: "<html></html>" };
+  }
+  async dispose(): Promise<void> {}
+}
+
+describe("recon — GraphQL introspection (Query-only, read-only)", () => {
+  it("enumerates Query fields' string args with a valid selection, skipping no-arg fields", async () => {
+    const result = await recon(new GqlSession(), gate, scope);
+    const probes = result.endpoints.filter((e) => e.graphql).map((e) => e.graphql);
+
+    const debug = probes.find((g) => g?.field === "systemDebug");
+    expect(debug).toBeDefined();
+    expect(debug?.arg).toBe("arg");
+    expect(debug?.selection).toBe(""); // scalar return needs no selection
+
+    const pastes = probes.find((g) => g?.field === "pastes");
+    expect(pastes?.arg).toBe("filter");
+    expect(pastes?.selection).toBe(" { id }"); // object return needs a scalar subfield
+
+    // A field with no string argument is not a probe.
+    expect(probes.some((g) => g?.field === "health")).toBe(false);
+    // Every GraphQL endpoint is the gated POST endpoint.
+    for (const e of result.endpoints.filter((x) => x.graphql)) {
+      expect(e.method).toBe("POST");
+      expect(gate.check(e.url).allowed).toBe(true);
+    }
+  });
+});
+
 describe("recon — OpenAPI ingestion (JSON API surface)", () => {
   it("enumerates GET path/query params from a served spec and skips non-GET ops", async () => {
     const result = await recon(new SpecSession(), gate, scope);

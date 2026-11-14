@@ -7,7 +7,7 @@ import type { Gateway } from "../gateway/bifrostClient.js";
 import { BudgetExceededError } from "../gateway/budget.js";
 import { type Candidate, groundedLookup } from "../hypothesis/tavilyClient.js";
 import type { Fingerprint } from "../recon/fingerprint.js";
-import { type ReconResult, recon } from "../recon/index.js";
+import { type GraphQLProbe, type ReconResult, recon } from "../recon/index.js";
 import type { ScopeGate } from "../scope/gate.js";
 import type { ScopeFile } from "../scope/schema.js";
 import { BrowserSession } from "../session/browserSession.js";
@@ -36,6 +36,8 @@ interface WorkItem {
   method?: "GET" | "POST";
   /** Injectable form fields recon captured, for a form-aware probe. */
   fields?: string[];
+  /** A GraphQL Query-field argument to inject into, when this targets a GraphQL endpoint. */
+  graphql?: GraphQLProbe;
   /** Finding id of the step that seeded this one — the attack-graph edge. */
   parentId?: string;
   /** 1-based position in the chain. */
@@ -202,16 +204,22 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   // run's step budget is finite: on a router-style app (dozens of `?page=` links)
   // front-loading the real inputs lets the battery reach them before the budget
   // drains probing router params. Stable within equal field counts.
+  const weight = (ep: (typeof reconResult.endpoints)[number]) =>
+    ep.graphql ? 1 : (ep.fields?.length ?? 0);
   const surface = reconResult.endpoints
     .map((ep, i) => ({ ep, i }))
-    .sort((a, b) => (b.ep.fields?.length ?? 0) - (a.ep.fields?.length ?? 0) || a.i - b.i)
+    .sort((a, b) => weight(b.ep) - weight(a.ep) || a.i - b.i)
     .map((x) => x.ep);
   for (const ep of surface) {
-    queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
+    // A GraphQL endpoint answers only POST queries, so a GET access-probe is noise.
+    if (!ep.graphql) {
+      queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
+    }
     if (ep.hasParams || (ep.fields?.length ?? 0) > 0) {
-      // A parameterized or form endpoint gets the full read-only injection battery,
-      // each probe form-aware (targets the endpoint's own fields/params). The
-      // checks self-skip a state-changing form, so queueing them is safe.
+      // A parameterized, form, or GraphQL endpoint gets the full read-only injection
+      // battery, each probe input-aware (targets the endpoint's own fields/params/
+      // GraphQL argument). The checks self-skip a state-changing form, so queueing
+      // them is safe.
       for (const technique of [
         "SQL Injection",
         "Reflected Cross-Site Scripting",
@@ -223,6 +231,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           url: ep.url,
           method: ep.method,
           fields: ep.fields,
+          graphql: ep.graphql,
           tier: 1,
           retries: 0,
           step: 1,
@@ -302,6 +311,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           url: item.url,
           method: item.method,
           fields: item.fields,
+          graphql: item.graphql,
           authenticated: scope.credentials.length > 0,
           objectiveHint: hint,
           context,

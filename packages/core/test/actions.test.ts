@@ -532,4 +532,46 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
     expect(seen.some((u) => u.includes("/users/v1/'"))).toBe(true);
     expect(seen.every((u) => !u.includes("?username="))).toBe(true);
   });
+
+  it("injects into a GraphQL Query-field argument (command injection)", async () => {
+    const bodies: string[] = [];
+    const gqlCmd = new StubSession((req) => {
+      bodies.push(req.body ?? "");
+      return inputOf(req).includes("; id")
+        ? { body: '{"data":{"systemDebug":"uid=1000(dvga) gid=1000(dvga) groups=1000(dvga)\\n"}}' }
+        : { body: '{"data":{"systemDebug":""}}' };
+    });
+    const hit = await attempt(
+      gqlCmd,
+      "OS Command Injection",
+      opts({
+        url: "http://localhost:9/graphql",
+        method: "POST",
+        graphql: { field: "systemDebug", arg: "arg", selection: "", fixedArgs: "" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    // The probe POSTed a GraphQL query carrying the field and the payload.
+    expect(bodies.some((b) => b.includes("systemDebug(arg:") && b.includes("; id"))).toBe(true);
+  });
+
+  it("confirms SQL injection surfaced in a GraphQL errors array", async () => {
+    const gqlSqli = new StubSession((req) =>
+      inputOf(req).includes("'")
+        ? {
+            body: '{"errors":[{"message":"(sqlite3.OperationalError) near \\"x\\": syntax error [SQL: SELECT * FROM pastes WHERE title = ...]"}]}',
+          }
+        : { body: '{"data":{"pastes":[]}}' },
+    );
+    const hit = await attempt(
+      gqlSqli,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:9/graphql",
+        method: "POST",
+        graphql: { field: "pastes", arg: "filter", selection: " { id }", fixedArgs: "" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+  });
 });
