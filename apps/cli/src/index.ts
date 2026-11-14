@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  AuditLog,
   Budget,
   bus,
   EvidenceStore,
@@ -8,11 +9,13 @@ import {
   type FrozenTarget,
   formatAblationTable,
   formatRegrounding,
+  formatTiming,
   Gateway,
   groundedLookup,
   loadScope,
   type PrecisionScore,
   precisionAtK,
+  RunTimeline,
   readFindings,
   runAblation,
   runLoop,
@@ -30,6 +33,27 @@ import { loadEnv } from "./env.js";
 import { attachRenderer } from "./render.js";
 
 loadEnv();
+
+/**
+ * Emergency stop. Distinct from the step and budget caps, which are graceful
+ * upper bounds on a run that completes on its own; this is an operator-initiated
+ * immediate abort. Evidence is appended synchronously per finding, so every
+ * finding confirmed before the signal is already durable on disk — exiting now
+ * loses nothing. A second signal hard-kills in case anything is wedged.
+ */
+let stopping = false;
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    if (stopping) process.exit(130);
+    stopping = true;
+    console.error(
+      `\n${pc.yellow("■ kill-switch")} — ${sig} received. Aborting the run immediately.` +
+        ` Findings confirmed so far are already written to the evidence file.` +
+        ` Press again to force-quit.`,
+    );
+    process.exit(130);
+  });
+}
 
 function fromCwd(path: string): string {
   return resolve(process.env.INIT_CWD ?? process.cwd(), path);
@@ -61,12 +85,17 @@ program
     const evidencePath = process.env.NF_EVIDENCE_PATH ?? fromCwd("nightfall-findings.jsonl");
     const store = new EvidenceStore(evidencePath);
     const findings: Finding[] = [];
+    const timeline = new RunTimeline(bus);
+    const auditPath = `${evidencePath.replace(/\.jsonl$/, "")}.audit.jsonl`;
+    const audit = new AuditLog(bus, auditPath);
     const state = await runLoop(scope, gate, gateway, {
       record: (f) => {
         store.record(f);
         findings.push(f);
       },
     });
+    timeline.stop();
+    audit.stop();
 
     const report = toMarkdown(findings, {
       target: scope.target,
@@ -78,7 +107,11 @@ program
     });
     const reportPath = `${evidencePath.replace(/\.jsonl$/, "")}.report.md`;
     writeFileSync(reportPath, report);
-    console.log(`\nreport → ${reportPath}`);
+    const breakdown = timeline.breakdown();
+    const timingPath = `${evidencePath.replace(/\.jsonl$/, "")}.timing.json`;
+    writeFileSync(timingPath, JSON.stringify(breakdown, null, 2));
+    console.log(`\n${formatTiming(breakdown)}`);
+    console.log(`\nreport → ${reportPath}  ·  timing → ${timingPath}  ·  audit → ${auditPath}`);
   });
 
 program
@@ -116,12 +149,16 @@ program
     const evidencePath = process.env.NF_EVIDENCE_PATH ?? fromCwd("nightfall-findings.jsonl");
     const store = new EvidenceStore(evidencePath);
     const findings: Finding[] = [];
+    const timeline = new RunTimeline(bus);
+    const audit = new AuditLog(bus, `${evidencePath.replace(/\.jsonl$/, "")}.audit.jsonl`);
     const state = await runLoop(scope, gate, gateway, {
       record: (f) => {
         store.record(f);
         findings.push(f);
       },
     });
+    timeline.stop();
+    audit.stop();
     const report = toMarkdown(findings, {
       target: scope.target,
       objective: scope.objective,
@@ -131,6 +168,12 @@ program
       costUsd: state.costUsd,
     });
     writeFileSync(`${evidencePath.replace(/\.jsonl$/, "")}.report.md`, report);
+    const breakdown = timeline.breakdown();
+    writeFileSync(
+      `${evidencePath.replace(/\.jsonl$/, "")}.timing.json`,
+      JSON.stringify(breakdown, null, 2),
+    );
+    console.log(`\n${formatTiming(breakdown)}`);
     console.log(`\nrun complete — socket stays open on :${port}. Ctrl+C to stop.`);
   });
 

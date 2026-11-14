@@ -1,4 +1,12 @@
+export { AuditLog } from "./events/audit.js";
 export { bus } from "./events/bus.js";
+export {
+  formatTiming,
+  type Phase,
+  type PhaseTiming,
+  RunTimeline,
+  type TimingBreakdown,
+} from "./events/timing.js";
 export * from "./events/types.js";
 export { Finding } from "./evidence/models.js";
 export { EvidenceStore, readFindings } from "./evidence/store.js";
