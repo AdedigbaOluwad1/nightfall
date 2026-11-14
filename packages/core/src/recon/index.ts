@@ -31,6 +31,17 @@ const CRAWL_LIMIT = 12;
 const KNOWN_PATHS = ["/", "/robots.txt", "/login", "/admin", "/sitemap.xml"];
 
 /**
+ * A link whose mere GET changes server-side state. Recon is passive and must
+ * never fire these: a crawl that logs itself out or toggles a setting corrupts
+ * the very session every later probe depends on. (A cold target that enforced
+ * SSL per-session via a `?do=toggle-enforce-ssl` link derailed an entire run
+ * this way — recon flipped the switch, then every probe hit an unreachable
+ * https redirect.) It also keeps recon honest to the read-only contract.
+ */
+const MUTATING_LINK =
+  /\b(?:logout|sign-?out|log-?off)\b|[?&]do=(?:toggle|reset|clear|enable|disable|delete|destroy)|[?&]action=(?:delete|logout|reset)/i;
+
+/**
  * Crawl the in-scope surface through `session` (so a SPA served over the Tier-2
  * browser fingerprints the same way raw HTTP does), fingerprint the stack, and
  * opportunistically enrich with real tools. Every outbound touch is gated: the
@@ -55,6 +66,7 @@ export async function recon(
       return;
     }
     if (new URL(url).origin !== origin) return; // stay on-origin; gate is the hard stop
+    if (MUTATING_LINK.test(url)) return; // passive recon never fires a state-changing GET
     if (!gate.check(url).allowed) return;
     const key = url.split("#")[0] ?? url;
     if (!visited.has(key) && !queue.includes(key) && queue.length + visited.size < CRAWL_LIMIT) {
@@ -101,7 +113,7 @@ export async function recon(
     }
 
     const parsed = new URL(url);
-    if (parsed.search) {
+    if (parsed.search && !MUTATING_LINK.test(url)) {
       endpoints.set(`GET ${url}`, { url, method: "GET", hasParams: true });
     }
   }

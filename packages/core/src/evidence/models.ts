@@ -18,8 +18,14 @@ export const Finding = z.object({
   /** The originating technique — the stable attribution key for precision@k. */
   technique: z.string().default(""),
   severity: Severity,
+  /** CWE identifier for the weakness class, e.g. "CWE-89". */
+  cwe: z.string().default(""),
+  /** CVE the finding was grounded against, when a live advisory applied. */
+  cve: z.string().default(""),
   cvss: z.string().default(""),
   cvssScore: z.number().optional(),
+  /** How the finding was confirmed — signal observed vs impact achieved. */
+  basis: z.string().default(""),
   evidence: z.array(Evidence),
   remediation: z.string().default(""),
   /** Position in the attack chain (1-based); absent for standalone findings. */

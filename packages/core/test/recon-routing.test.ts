@@ -16,6 +16,9 @@ const HTML = `<html><body>
   <a href="/app/one">in scope</a>
   <a href="http://evil.com/x">off scope</a>
   <a href="//evil.com/y">protocol-relative off scope</a>
+  <a href="/index.php?do=toggle-enforce-ssl">state-changing toggle</a>
+  <a href="/logout">logout</a>
+  <a href="/index.php?action=delete&id=1">destructive action</a>
   <form action="http://evil.com/post" method="post"></form>
   <form action="/app/login" method="post"></form>
 </body></html>`;
@@ -47,5 +50,15 @@ describe("recon — gate routing (zero out-of-scope)", () => {
       expect(ep.url).not.toContain("evil.com");
       expect(gate.check(ep.url).allowed).toBe(true);
     }
+  });
+
+  it("never fires a state-changing GET — recon stays read-only", async () => {
+    const session = new RecordingSession();
+    const result = await recon(session, gate, scope);
+
+    const all = [...session.requested, ...result.endpoints.map((e) => e.url)].join(" ");
+    expect(all).not.toContain("toggle-enforce-ssl");
+    expect(all).not.toMatch(/\/logout\b/);
+    expect(all).not.toContain("action=delete");
   });
 });

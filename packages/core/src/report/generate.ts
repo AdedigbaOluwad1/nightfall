@@ -24,6 +24,62 @@ function bySeverity(a: Finding, b: Finding): number {
   return ORDER[a.severity] - ORDER[b.severity];
 }
 
+/** Confirmation basis split: impact actually achieved vs signal observed. */
+function confirmationSplit(findings: Finding[]): { impact: number; signal: number } {
+  let impact = 0;
+  let signal = 0;
+  for (const f of findings) {
+    if (f.basis.startsWith("Impact-confirmed")) impact += 1;
+    else if (f.basis.startsWith("Signal-based")) signal += 1;
+  }
+  return { impact, signal };
+}
+
+/**
+ * A non-technical executive summary: what the engagement covered, the headline
+ * risk in business terms, and an honest confirmation posture (how many findings
+ * were impact-confirmed versus signal-based). Kept deliberately separate from
+ * the technical body so a reader who stops here is not misled.
+ */
+function executiveSummary(findings: Finding[], m: ReportMeta): string {
+  const lines = [`## Executive summary`, ``];
+  if (findings.length === 0) {
+    lines.push(
+      `An authorized black-box penetration test of ${m.target} completed without` +
+        ` confirming an exploitable vulnerability within the run's time and cost budget.` +
+        ` This is not a proof of security: it bounds what this engagement exercised, not` +
+        ` what exists.`,
+      ``,
+    );
+    return lines.join("\n");
+  }
+  const top = findings[0] as Finding;
+  const { impact, signal } = confirmationSplit(findings);
+  const chainReached = attackChain(findings).length >= 2;
+  const postureBits: string[] = [];
+  if (impact > 0) postureBits.push(`${impact} impact-confirmed (exploitation observed)`);
+  if (signal > 0)
+    postureBits.push(`${signal} signal-based (strong indicator, manual confirmation advised)`);
+  lines.push(
+    `An authorized black-box penetration test of ${m.target} confirmed` +
+      ` ${findings.length} finding${findings.length === 1 ? "" : "s"}. The most severe is` +
+      ` **${top.title.split(" at ")[0]}** (${top.severity}${top.cvssScore !== undefined ? `, CVSS ${top.cvssScore.toFixed(1)}` : ""}).`,
+    ``,
+  );
+  if (chainReached) {
+    lines.push(
+      `The findings are not isolated: the agent chained them into a working path to the` +
+        ` stated objective, demonstrating real-world impact rather than a list of` +
+        ` theoretical weaknesses.`,
+      ``,
+    );
+  }
+  if (postureBits.length > 0) {
+    lines.push(`**Confirmation posture:** ${postureBits.join("; ")}.`, ``);
+  }
+  return lines.join("\n");
+}
+
 function summarize(findings: Finding[]): string {
   if (findings.length === 0) return "No findings confirmed.";
   const counts = new Map<Severity, number>();
@@ -82,6 +138,8 @@ function findingSection(f: Finding, index: number): string {
     ``,
     `- **Severity:** ${f.severity}`,
   ];
+  if (f.cwe) lines.push(`- **Weakness:** ${f.cwe}`);
+  if (f.cve) lines.push(`- **Known vulnerability:** ${f.cve}`);
   if (f.cvss) lines.push(`- **CVSS vector:** \`${f.cvss}\``);
   if (f.step !== undefined && (f.parentId || f.consumed || f.produced?.length)) {
     const bits: string[] = [`chain step ${f.step}`];
@@ -89,6 +147,7 @@ function findingSection(f: Finding, index: number): string {
     if (f.produced?.length) bits.push(`produces the ${f.produced.join(", ")}`);
     lines.push(`- **Attack chain:** ${bits.join(" · ")}`);
   }
+  if (f.basis) lines.push(``, `**Verification**`, ``, f.basis);
   lines.push(``, `**Evidence**`, ``);
   if (f.evidence.length === 0) {
     lines.push("_No evidence captured._", ``);
@@ -99,17 +158,26 @@ function findingSection(f: Finding, index: number): string {
     if (e.note) lines.push(``, `_${e.note}_`);
     lines.push(``);
   }
+  if (f.evidence[0]?.request) {
+    lines.push(
+      `**Reproduction**`,
+      ``,
+      `Replay the request above against the target in the authorized scope; the response reproduces the signal recorded here. No additional state or tooling is required.`,
+      ``,
+    );
+  }
   lines.push(`**Remediation**`, ``, f.remediation || "_Remediation pending._", ``);
   return lines.join("\n");
 }
 
 /**
  * Render confirmed findings as a client-ready Markdown report: a metadata
- * header, an executive summary counted by severity, and one fully-dressed
- * section per finding — severity, CVSS vector/score, the in-scope
- * request/response that is the evidence, and concrete remediation — ordered
- * most-severe first. Markdown is canonical; PDF (marked → HTML → puppeteer) is
- * a later polish, not a blocker.
+ * header, a non-technical executive summary, a PTES methodology note, and a
+ * technical body with one fully-dressed section per finding — severity, CWE,
+ * any grounding CVE, CVSS vector/score, the verification basis (signal vs
+ * impact), the in-scope request/response evidence, reproduction, and concrete
+ * remediation — ordered most-severe first. Markdown is canonical; PDF
+ * (marked → HTML → puppeteer) is a later polish, not a blocker.
  */
 export function toMarkdown(findings: Finding[], meta: ReportMeta | string): string {
   const m: ReportMeta = typeof meta === "string" ? { target: meta } : meta;
@@ -126,10 +194,21 @@ export function toMarkdown(findings: Finding[], meta: ReportMeta | string): stri
   if (m.costUsd !== undefined) runBits.push(`model spend: $${m.costUsd.toFixed(4)}`);
   if (runBits.length > 0) header.push(`**Run:** ${runBits.join(" · ")}`);
 
-  const body = [``, `## Summary`, ``, summarize(sorted), ``];
+  const body = [``, executiveSummary(sorted, m)];
+  body.push(
+    `## Methodology`,
+    ``,
+    `Testing followed the PTES (Penetration Testing Execution Standard) phases —` +
+      ` intelligence gathering, threat modeling, vulnerability analysis, and exploitation` +
+      ` — executed autonomously against the authorized scope. Every attempt is a` +
+      ` hand-written, read-only probe; confirmation is signal-based or impact-confirmed as` +
+      ` stated per finding, and no destructive action is ever issued. See` +
+      ` [SAFETY.md](./SAFETY.md) for the full trust model.`,
+    ``,
+  );
+  body.push(`## Technical findings`, ``, summarize(sorted), ``);
   const chain = attackChain(sorted);
   if (chain.length >= 2) body.push(chainSection(chain));
-  body.push(`## Findings`, ``);
   if (sorted.length === 0) {
     body.push(
       "The agent completed its authorized run without confirming an in-scope vulnerability.",

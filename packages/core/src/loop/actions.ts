@@ -138,66 +138,92 @@ function classify(technique: string): Kind {
 /** Severity, CVSS, and remediation for a confirmed finding of a given class. */
 export interface FindingProfile {
   name: string;
+  /** CWE identifier for the weakness class, e.g. "CWE-89". */
+  cwe: string;
   severity: Severity;
   cvss: string;
   cvssScore: number;
+  /** How a finding of this class is confirmed — signal observed vs impact
+   *  actually achieved — stated plainly so the report never over-claims. */
+  basis: string;
   remediation: string;
 }
 
 const PROFILES: Record<Kind, FindingProfile> = {
   sqli: {
     name: "SQL Injection",
+    cwe: "CWE-89",
     severity: "critical",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
     cvssScore: 9.8,
+    basis:
+      "Signal-based: a database engine error was returned when a single unmatched quote was submitted, proving unsanitized input reaches the SQL parser. No data was extracted and no rows were altered.",
     remediation:
       "Use parameterized queries or prepared statements for every database access and never concatenate untrusted input into SQL. Add allow-list input validation and run the application under a least-privilege database account.",
   },
   xss: {
     name: "Reflected Cross-Site Scripting (XSS)",
+    cwe: "CWE-79",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N",
     cvssScore: 7.4,
+    basis:
+      "Signal-based: a unique injected marker was reflected into the response without output encoding. Script execution was not driven in a headless browser, so exploitability is inferred from the unencoded reflection, not observed.",
     remediation:
       "Context-encode all untrusted output and rely on the framework's auto-escaping, serve a strict Content-Security-Policy, and treat any raw-HTML sink as a mandatory review gate.",
   },
   csrf: {
     name: "Cross-Site Request Forgery (CSRF)",
+    cwe: "CWE-352",
     severity: "medium",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N",
     cvssScore: 5.4,
+    basis:
+      "Signal-based: a state-changing endpoint accepted a cross-origin-shaped request with no anti-CSRF token present. A full cross-site forgery was not driven end-to-end.",
     remediation:
       "Set SameSite=Lax or Strict on session cookies, require a per-session anti-CSRF token on every state-changing request, and verify the Origin or Referer header server-side.",
   },
   traversal: {
     name: "Path Traversal / File Inclusion",
+    cwe: "CWE-22",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
     cvssScore: 7.5,
+    basis:
+      "Impact-confirmed: a traversal sequence returned the contents of a file outside the web root, so unauthorized read access was actually achieved (read-only — a single known file was retrieved).",
     remediation:
       "Canonicalize paths and confine file access to an allow-listed base directory, reject directory-traversal sequences after normalization, and never hand user input to filesystem APIs directly.",
   },
   cmdi: {
     name: "OS Command Injection",
+    cwe: "CWE-78",
     severity: "critical",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
     cvssScore: 9.8,
+    basis:
+      "Impact-confirmed: a benign appended command (`; id`) returned its output in the response, proving arbitrary command execution. The probe is read-only and ran no destructive command.",
     remediation:
       "Never pass user input to a shell; invoke processes with an argument array and no shell interpolation, apply strict allow-list validation, and run with least privilege.",
   },
   bac: {
     name: "Broken Access Control",
+    cwe: "CWE-862",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
     cvssScore: 7.5,
+    basis:
+      "Impact-confirmed: a resource that should require authorization was returned to a principal that lacks it, so the access-control gap was actually exercised (read-only).",
     remediation:
       "Enforce server-side authorization on every request against the authenticated principal, deny by default, and never rely on unlinked or obscure URLs for protection.",
   },
   fallback: {
     name: "Security Exposure",
+    cwe: "CWE-200",
     severity: "medium",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
     cvssScore: 5.3,
+    basis:
+      "Signal-based: an anomalous response disclosed information a hardened surface would withhold. The exposure is reported for manual confirmation, not claimed as an exploited impact.",
     remediation:
       "Manually confirm this exposure, verify server-side authorization and input handling on the affected surface, and add a regression test that keeps it closed.",
   },
@@ -212,17 +238,23 @@ const PROFILES: Record<Kind, FindingProfile> = {
 const CHAIN_PROFILES: Record<string, FindingProfile> = {
   [T_AUTH_BYPASS]: {
     name: "SQL Injection — Authentication Bypass",
+    cwe: "CWE-89",
     severity: "critical",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
     cvssScore: 9.8,
+    basis:
+      "Impact-confirmed: the injected predicate established an authenticated session without valid credentials, so authentication was actually bypassed. The probe only reads the auth table — no credential is altered and no account is locked.",
     remediation:
       "Use parameterized queries for the authentication lookup so credentials can never alter query structure, and never build the login SQL by string concatenation. Add server-side rate limiting and generic auth-failure responses.",
   },
   [T_ADMIN_ACCESS]: {
     name: "Broken Access Control — Privilege Escalation",
+    cwe: "CWE-269",
     severity: "high",
     cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
     cvssScore: 8.1,
+    basis:
+      "Impact-confirmed: the session from the bypass step reached an admin-only resource, so the privilege boundary was actually crossed (read-only access to the restricted surface).",
     remediation:
       "Enforce server-side role checks on every admin resource against the authenticated principal, deny by default, and reject tokens whose subject lacks the admin role instead of trusting a valid signature alone.",
   },
@@ -554,11 +586,24 @@ async function commandInjectionCheck(
 // redirected to. A word from the objective echoing on a login screen ("Admin
 // login") is NOT the objective reached — treating it as a finding is the
 // classic session-expiry false positive on an unfamiliar target.
-const LOGIN_PAGE =
-  /<input[^>]+type=["']?password|name=["']?(?:password|passwd|pwd)\b|action=["'][^"']*\blog[-_]?in\b|(?:please\s+)?(?:log[\s-]?in|sign[\s-]?in)\s+to\s+(?:continue|your\s+account)/i;
+// A credential-entry field (strong) and a login affordance (strong). A LONE
+// password field is NOT enough — an admin page with a change-password widget has
+// one, and discarding that as "a login wall" would turn the false positive we
+// fixed into its mirror image (a real finding dropped). Require BOTH signals, so
+// only a page that is actually a login screen is treated as an auth wall.
+const PASSWORD_FIELD = /<input[^>]+type=["']?password|name=["']?(?:password|passwd|pwd)\b/i;
+const LOGIN_AFFORDANCE =
+  /action=["'][^"']*\blog[-_]?in\b|\b(?:log[\s-]?in|sign[\s-]?in)\s+to\s+(?:continue|your\s+account|proceed)|<(?:h1|h2|title)[^>]*>[^<]*\b(?:log[\s-]?in|sign[\s-]?in)\b/i;
 
+// An auth wall: an auth-failure status (robust, content-independent), or a body
+// that is unmistakably a login screen (credential field AND a login affordance).
+// Status 401/403 is the primary signal; the body heuristic only corroborates the
+// redirect-to-a-200-login-page case and is deliberately conservative. A SPA that
+// returns a 200 shell and redirects to login client-side can still slip past the
+// HTTP-tier body check — a documented residual, covered by the Tier-2 browser.
 function isAuthWall(status: number, body: string): boolean {
-  return status === 401 || status === 403 || LOGIN_PAGE.test(body);
+  if (status === 401 || status === 403) return true;
+  return PASSWORD_FIELD.test(body) && LOGIN_AFFORDANCE.test(body);
 }
 
 /** GET `url` and report whether a reachable page matches the objective tokens. */

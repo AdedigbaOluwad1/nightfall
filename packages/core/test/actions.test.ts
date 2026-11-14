@@ -183,6 +183,22 @@ describe("attempt — technique-aware dispatch", () => {
     expect(blocked.ok).toBe(false);
   });
 
+  it("does NOT discard a real finding that merely contains a password field (no false negative)", async () => {
+    // The mirror risk of the auth-wall guard: an admin page with a change-password
+    // widget has a password input but is NOT a login screen. It must still confirm
+    // — a lone password field is not enough to classify a page as an auth wall.
+    const adminPage = new StubSession(() => ({
+      status: 200,
+      body: '<h1>Admin Dashboard</h1><p>admin settings</p><form action="/account/password"><input type="password" name="newpass"></form>',
+    }));
+    const confirmed = await attempt(
+      adminPage,
+      "Broken Access Control",
+      opts({ objectiveHint: ["admin"] }),
+    );
+    expect(confirmed.ok).toBe(true);
+  });
+
   it("at the bare root, steers broken-access to the admin surface but not unrecognized techniques", async () => {
     // A server whose root carries no objective token, but whose admin surface does.
     const perPath = new StubSession((req) => {

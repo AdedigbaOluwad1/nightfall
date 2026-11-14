@@ -9,8 +9,11 @@ const sqli: Finding = {
   title: "SQL injection at /rest/products/search",
   technique: "sql injection",
   severity: "critical",
+  cwe: "CWE-89",
+  cve: "CVE-2026-8723",
   cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
   cvssScore: 9.8,
+  basis: "Signal-based: a database engine error was returned.",
   evidence: [
     {
       request: "GET /rest/products/search?q='\"",
@@ -28,8 +31,11 @@ const bac: Finding = {
   title: "Broken access control at /rest/admin/application-configuration",
   technique: "access-probe",
   severity: "high",
+  cwe: "CWE-862",
+  cve: "",
   cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
   cvssScore: 7.5,
+  basis: "Impact-confirmed: a restricted resource was returned.",
   evidence: [
     { request: "GET /rest/admin/application-configuration", response: '{"config":{}}', note: "" },
   ],
@@ -56,6 +62,14 @@ describe("toMarkdown — a report a consultant would sign", () => {
     expect(md).toContain("(CVSS 9.8)");
     expect(md).toContain("Use parameterized queries.");
     expect(md).toContain("GET /rest/admin/application-configuration");
+    // Executive summary, PTES methodology, CWE/CVE, and verification basis.
+    expect(md).toContain("## Executive summary");
+    expect(md).toContain("PTES");
+    expect(md).toContain("**Weakness:** CWE-89");
+    expect(md).toContain("**Known vulnerability:** CVE-2026-8723");
+    expect(md).toContain("**Verification**");
+    expect(md).toContain("impact-confirmed");
+    expect(md).toContain("**Reproduction**");
   });
 
   it("orders findings most-severe first regardless of input order", () => {
@@ -71,7 +85,10 @@ describe("toMarkdown — a report a consultant would sign", () => {
       title: "x",
       technique: "x",
       severity: "low",
+      cwe: "",
+      cve: "",
       cvss: "",
+      basis: "",
       evidence: [{ request: "GET /", response: "```\nnot a fence\n```", note: "" }],
       remediation: "",
     };
@@ -93,7 +110,10 @@ describe("toMarkdown — a report a consultant would sign", () => {
       title: "SQL Injection — Authentication Bypass at http://x/",
       technique: "SQL Injection — authentication bypass",
       severity: "critical",
+      cwe: "CWE-89",
+      cve: "",
       cvss: "",
+      basis: "",
       evidence: [{ request: "POST /login", response: "token", note: "" }],
       remediation: "",
       step: 1,
@@ -106,7 +126,10 @@ describe("toMarkdown — a report a consultant would sign", () => {
       title: "Broken Access Control — Privilege Escalation at http://x/",
       technique: "Authenticated admin access",
       severity: "high",
+      cwe: "CWE-269",
+      cve: "",
       cvss: "",
+      basis: "",
       evidence: [{ request: "GET /api/Users", response: "users", note: "" }],
       remediation: "",
       step: 2,

@@ -71,7 +71,13 @@ export class BrowserSession implements Session {
 
   async request(req: SessionRequest): Promise<SessionResponse> {
     const page = await this.ensure();
-    const res = await page.goto(req.url, { waitUntil: "networkidle" });
+    const res = await page.goto(req.url, { waitUntil: "domcontentloaded" });
+    // A SPA often returns a 200 shell and then redirects or renders client-side
+    // after load. `goto` resolves on the initial navigation, so settle explicitly
+    // afterwards (bounded, never throwing) and capture the real post-JS DOM — not
+    // the empty shell a raw HTTP probe would see. This is what makes a client-
+    // rendered auth wall reachable on Tier 2.
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
     return {
       status: res?.status() ?? 0,
       headers: res ? res.headers() : {},
