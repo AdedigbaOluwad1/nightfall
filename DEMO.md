@@ -9,9 +9,6 @@
 > back on. Run order is deliberate: open on the thing that is pure correctness
 > (scope), land the autonomous run, then prove the sponsors are load-bearing.
 
-Captured recordings live in [`apps/cli/demo/recordings/`](./apps/cli/demo/recordings/)
-and the frozen measurement artifacts in [`apps/cli/demo/`](./apps/cli/demo/).
-
 ---
 
 ## Beat 1 — Scope is sacred (0:00–0:40) · rubric: respect scope strictly
@@ -20,17 +17,16 @@ and the frozen measurement artifacts in [`apps/cli/demo/`](./apps/cli/demo/).
 
 ```bash
 pnpm --filter @nightfall/cli dev -- scope-check \
-  --scope apps/cli/demo/scope-gate.scope.yaml \
-  --probes apps/cli/demo/scope-gate-probes.json
+  --scope packages/core/src/scope/example.scope.yaml \
+  --url http://localhost:3000/logout \
+  --url http://evil.example.com/ \
+  --url "http://localhost:3000/foo/%2e%2e/logout"
 ```
 
-**Payoff:** 10/10 adversarial probes behave as scoped — an out-of-scope host, a denied
-surface, a sibling-path leak (`/restaurant` vs allow `/rest`), plain and encoded
-traversal, userinfo confusion, an IP literal — each refused with the gate's own reason.
-The command exits non-zero on any out-of-scope behavior, so this is a measured proof.
+**Payoff:** every adversarial probe behaves as scoped — an out-of-scope host, a denied
+surface, plain and encoded traversal — each refused with the gate's own reason. The
+command exits non-zero on any out-of-scope behavior, so this is a measured proof.
 **No model, no lab, no quota.**
-
-**Recording:** [`recordings/scope-check.txt`](./apps/cli/demo/recordings/scope-check.txt)
 
 ---
 
@@ -48,18 +44,11 @@ pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.scop
 Control) → objective reached → a client-ready report drops to disk. It completes with
 no human nudge and halts cleanly (`halted: objective`).
 
-**Recordings:** [`recordings/cold-run.trace.txt`](./apps/cli/demo/recordings/cold-run.trace.txt)
-· [`recordings/report.sample.md`](./apps/cli/demo/recordings/report.sample.md) (the
-signed-quality report: severity, CVSS, evidence, remediation).
-
 ---
 
 ## Beat 3 — Tavily, measured (1:40–2:20) · rubric: meaningful Tavily use
 
 **Say:** "We don't assert Tavily helps — we measured it, two ways, from frozen input."
-
-Show [`apps/cli/demo/README.md`](./apps/cli/demo/README.md) and
-[`grounding-pair.json`](./apps/cli/demo/grounding-pair.json):
 
 - **Freshness:** grounded surfaces **5** post-cutoff CVEs on WebGoat vs **0** ungrounded.
 - **Citation validity:** grounded recovers the **full Log4Shell chain (4/4)** vs the

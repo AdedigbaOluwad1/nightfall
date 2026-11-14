@@ -42,12 +42,14 @@ The gate's refusal is a measured, reproducible beat — no model, no lab, no quo
 
 ```bash
 pnpm --filter @nightfall/cli dev -- scope-check \
-  --scope apps/cli/demo/scope-gate.scope.yaml \
-  --probes apps/cli/demo/scope-gate-probes.json
+  --scope packages/core/src/scope/example.scope.yaml \
+  --url http://localhost:3000/logout \
+  --url http://evil.example.com/ \
+  --url "http://localhost:3000/foo/%2e%2e/logout"
 ```
 
-It runs a frozen set of adversarial probes (out-of-scope host, denied surface,
-sibling-path leak, plain and encoded traversal, userinfo confusion, IP-vs-hostname) and
+Pass `--url` as many times as needed (out-of-scope host, denied surface, sibling-path
+leak, plain and encoded traversal, userinfo confusion, IP-vs-hostname) and the command
 **fails non-zero** if any behaves out of scope. The gate's unit tests
 (`packages/core/test/gate.test.ts`) lock the same cases.
 
