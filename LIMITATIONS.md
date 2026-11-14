@@ -224,9 +224,3 @@ These were on this list; we fixed them rather than excuse them.
   and Mutillidae `user-info` (MySQL) still confirm, each verified present under the
   payload and absent under the control (`actions.ts` `SQL_ERROR`,
   `signalIsPayloadCaused`). See COLD_RUN.md.
-
-## What our testing still can't substitute for
-
-- A **non-builder** running a cold target blind (we ran it ourselves; see
-  `COLD_RUN.md`), and an independent reproduction of a finding from the README
-  alone. These are human checks, not code we can ship.

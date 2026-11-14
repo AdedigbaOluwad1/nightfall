@@ -86,10 +86,16 @@ pnpm --filter @nightfall/cli dev -- scope-check \
   --url http://evil.example.com/ \
   --url "http://localhost:3000/foo/%2e%2e/logout"
 
-# Client-ready report: render a signed-quality report from a run's evidence JSONL.
+# Client-ready report: render a signed-quality report from a real run's evidence.
+# apps/cli/sample.findings.jsonl is a committed Juice Shop run (3 findings, one chain) —
+# so this renders with no lab, no quota, and no prior run of your own.
 pnpm --filter @nightfall/cli dev -- report \
-  --in nightfall-findings.jsonl --target http://localhost:3000/
+  --in apps/cli/sample.findings.jsonl --target http://localhost:3000/ \
+  --objective "Find and prove an injection or access-control flaw"
 ```
+
+Your own `run` writes `nightfall-findings.jsonl`; point `report --in` at that to render
+a report for a run you drove yourself.
 
 The Tavily grounding proof needs model quota:
 

@@ -81,8 +81,6 @@ session. Wall-clock: 41.8s (recon 2%, hypothesis 37%, exploit 60%).
 
 ## What this run would need to be stronger
 
-- A **non-builder** running it blind (we ran it ourselves; the discipline is
-  honored, the full effect — an independent tester's intervention log — is not).
 - Either a cold target whose easy wins fall inside the current probe set, or a
   broadened (still reviewed, still read-only) probe set — a deliberate increment,
   not a demo-day hack.
