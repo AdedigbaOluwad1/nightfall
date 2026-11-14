@@ -422,10 +422,16 @@ which is a word the app says about itself.
    `error in your SQL syntax` under a quote (at byte > 2 KB, so whole-body detection
    is still doing its job) and comes back clean under a benign value.
 
-**The honest post-fix scorecard**, every finding verified payload-caused: DVWA **5**
-(2 SQLi, 2 XSS, 1 cmdi) · Mutillidae **14** (6 SQLi, 7 XSS, 1 LFI) · DVGA **2** ·
-VAmPI **1** · bWAPP **0** · WebGoat **0**. bWAPP's zero is now honest in a second
-sense: its real injectable pages sit behind a bug-selection dropdown the crawler
-doesn't drive, so they were never reached — a coverage gap, named, not a graceful
-miss. This is the **fifth** bug a cold/unseen target exposed by reading the agent's
-work, and the only one where the number that lied was a _finding_, not a zero.
+**The honest post-fix scorecard**, every finding re-run and verified payload-caused
+across all nine labs: Mutillidae **14** (6 SQLi, 7 XSS, 1 LFI) · DVWA **5** (2 SQLi,
+2 XSS, 1 cmdi) · DVNA **4** (2 SQLi, 1 cmdi, 1 XSS) · Juice Shop **3** (SQLi,
+auth-bypass, BAC priv-esc) · DVGA **2** · VAmPI **1** · BodgeIt **1** · bWAPP **0** ·
+WebGoat **0** — 30 findings across seven labs plus two honest zeros (the full table,
+with stacks and surfaces, is in [README.md](./README.md)). DVNA rose from the single
+credentialed SQLi above to four once the widened battery reached `POST /app/ping`
+(error-based SQLi **and** command injection) and `POST /app/products` (reflected XSS),
+each confirmed by the control differential or the boolean oracle. bWAPP's zero is now
+honest in a second sense: its real injectable pages sit behind a bug-selection dropdown
+the crawler doesn't drive, so they were never reached — a coverage gap, named, not a
+graceful miss. This is the **fifth** bug a cold/unseen target exposed by reading the
+agent's work, and the only one where the number that lied was a _finding_, not a zero.
