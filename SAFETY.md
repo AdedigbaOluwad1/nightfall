@@ -37,10 +37,12 @@ Deny-by-default, and it fails safe on input nobody rehearsed:
   printed in the report header.
 - **Timestamp on every finding.** `foundAt` (ISO) is recorded as the finding is
   written (`toFinding`), so the order and time of actions is reconstructable.
-- **Append-only, crash-tolerant trail.** Evidence is one JSON object per line via
-  `appendFileSync` (`evidence/store.ts`); a crash mid-write can leave a partial
-  line, but `readFindings` wraps each line in `try/catch` + `safeParse` and skips
-  malformed lines, so a partial write never corrupts the trail.
+- **Append-only, crash-tolerant, self-disclosing trail.** Evidence is one JSON
+  object per line via `appendFileSync` (`evidence/store.ts`); a crash mid-write can
+  leave a partial line, but `readFindings` skips unparseable lines (a partial write
+  never corrupts the trail) **and counts them, emitting a visible `console.warn`**
+  so a reader is told the trail may be incomplete — a security report never
+  silently loses evidence.
 - **Blocked requests are evented** (`scope.blocked`) for the live trace. Full
   per-request audit logging (every request, not only those that produced a
   finding) is a documented extension, not yet persisted to disk.
@@ -102,9 +104,13 @@ recorded reason, and a deterministic fallback that is itself explainable.
   yields _no_ signal, so the failure mode is a **miss, never a false positive** —
   it fails safe, never over-claiming.
 - **Auth wall misread as a finding:** an expired session redirected to a 200
-  login page used to risk a false positive; now an auth wall (401/403, or a
-  login-form body) is rejected as not-applicable (`isAuthWall`, `loop/actions.ts`),
-  with a regression test.
+  login page used to risk a false positive; now an auth wall — a 401/403, or a body
+  that is unmistakably a login screen (a credential field **and** a login
+  affordance, not a lone password input) — is rejected as not-applicable
+  (`isAuthWall`, `loop/actions.ts`). The heuristic is deliberately conservative to
+  avoid the mirror failure (discarding a real finding that merely has a password
+  field); both directions are tested. A SPA that returns a 200 shell and redirects
+  client-side is a documented residual, covered by the Tier-2 browser.
 
 ## 7. Does the report hold up as evidence?
 

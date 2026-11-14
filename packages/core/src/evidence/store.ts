@@ -17,13 +17,25 @@ export class EvidenceStore {
 export function readFindings(path: string): Finding[] {
   if (!existsSync(path)) return [];
   const findings: Finding[] = [];
+  let skipped = 0;
   for (const line of readFileSync(path, "utf8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       const parsed = Finding.safeParse(JSON.parse(trimmed));
       if (parsed.success) findings.push(parsed.data);
-    } catch {}
+      else skipped++;
+    } catch {
+      skipped++;
+    }
+  }
+  // A silently-dropped finding is worse than a visible gap in a security trail:
+  // disclose it so a reader knows evidence may be missing (e.g. a crash mid-write)
+  // rather than trusting an incomplete report.
+  if (skipped > 0) {
+    console.warn(
+      `⚠ evidence: ${skipped} unreadable line(s) in ${path} skipped — the trail may be incomplete (possible crash mid-write).`,
+    );
   }
   return findings;
 }

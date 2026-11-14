@@ -7,14 +7,22 @@ the implicit ones — with a transition table that **includes the illegal row**,
 the guard that enforces it (file:line), and an honest status.
 
 **The single most important invariant:** the run is **strictly sequential**.
-There is no `Promise.all`, `Promise.race`, or concurrent fan-out anywhere in
-`packages/core/src` (`grep -rE "Promise\.(all|race|allSettled)"` → none). The loop
-`await`s every `recon`, `hypothesize`, and `attempt` before the next. This single
-fact defuses an entire class of races — concurrent re-auth, check-then-spend
-budget overrun, candidate A/B interleaving — because no two of these transitions
-can ever interleave in one run. Where a guard is "safe only because sequential,"
-that is stated, so adding concurrency later is a conscious re-audit, not a silent
-regression.
+There is no `Promise.all`, `Promise.race`/`any`, or concurrent fan-out anywhere in
+`packages/core/src`. The loop `await`s every `recon`, `hypothesize`, and `attempt`
+before the next. This single fact defuses an entire class of races — concurrent
+re-auth, check-then-spend budget overrun, candidate A/B interleaving — because no
+two of these transitions can ever interleave in one run. Where a guard is "safe
+only because sequential," that is stated, so adding concurrency later is a
+conscious re-audit, not a silent regression.
+
+This is **enforced, not a one-time grep**: `concurrency-guard.test.ts` scans
+`core/src` on every CI run and fails on any `Promise.all/allSettled/race/any`. The
+invariant cannot regress without someone deliberately deleting the guard and
+reading why. It also holds **below** `agent.ts`: the Tier-2 browser session
+(`browserSession.ts`) registers **no** `page.on(...)` event handlers — only bounded
+`waitFor`/`waitForLoadState` (10s) — so there is no library-driven reentrancy
+mutating shared state during an awaited step, and the Tier-1 cookie jar is mutated
+within the awaited fetch, before the next request is constructed.
 
 ---
 
@@ -22,13 +30,18 @@ regression.
 
 States: `running → {objective | steps | budget | exhausted}` (terminal).
 
-| from                       | event                   | to                | guard                                                                                                                                                                    |
-| -------------------------- | ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| running                    | `reachesObjective`      | objective (break) | `agent.ts` sets `objectiveReached=true` then `break`, same tick, no await between                                                                                        |
-| running                    | `steps ≥ maxSteps`      | steps             | checked at top of each iteration                                                                                                                                         |
-| running                    | `costUsd ≥ budgetUsd`   | budget            | `overBudget()` before every attempt + hypothesis                                                                                                                         |
-| running                    | queue empty             | exhausted         | `while` condition                                                                                                                                                        |
-| **objective/budget/steps** | **any further attempt** | **ILLEGAL**       | unreachable: each sets the flag and `break`s; the `while` guard is re-checked before any next `attempt`. Sequential ⇒ no in-flight attempt can complete after the break. |
+| from                       | event                   | to                        | guard                                                                                                                                                                                                              |
+| -------------------------- | ----------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| running                    | `reachesObjective`      | objective (break)         | `agent.ts` sets `objectiveReached=true` then `break`, same tick, no await between                                                                                                                                  |
+| running                    | `steps ≥ maxSteps`      | steps                     | checked at top of each iteration                                                                                                                                                                                   |
+| running                    | `costUsd ≥ budgetUsd`   | budget                    | `overBudget()` before every attempt + hypothesis                                                                                                                                                                   |
+| running                    | queue empty             | exhausted                 | `while` condition                                                                                                                                                                                                  |
+| running                    | a request hangs         | transient → retry/abandon | **each request is time-bounded** — `fetchGated` aborts after `NF_HTTP_TIMEOUT_MS` (default 20s); the browser tier bounds `waitFor`/`waitForLoadState` at 10s. A hung request can't stall the single-threaded loop. |
+| **objective/budget/steps** | **any further attempt** | **ILLEGAL**               | unreachable: each sets the flag and `break`s; the `while` guard is re-checked before any next `attempt`. Sequential ⇒ no in-flight attempt can complete after the break.                                           |
+
+**Termination is bounded on three axes — count, cost, AND time.** `maxSteps` bounds
+count, `budgetUsd` bounds cost, and the per-request timeout bounds wall-clock, so a
+slow-loris/stalling target cannot make "always terminates" false (see §6).
 
 **"Continue acting after the objective" bug:** not reachable. `objectiveReached`
 is set and the loop `break`s in the same synchronous step; there is no queued
@@ -90,12 +103,13 @@ The gate itself is **pure and memo-free** per request (`gate.check` constructs a
 fresh `URL`, consults only the static scope file; no cache, no DNS, no I/O). The
 implicit state lives in the transport around it.
 
-| concern                                                                                    | status                                            | evidence                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| in-scope → out-of-scope **redirect**                                                       | **guarded + tested**                              | `fetchGated` follows redirects manually (`redirect:"manual"`), re-checks the gate on **every hop**, fails closed; method downgrade honored. `session-redirect.test.ts` reproduces an in-scope→127.0.0.1 redirect and asserts it never fires the request.                                                                          |
-| non-http(s) scheme (e.g. `gopher://`)                                                      | guarded + tested                                  | scheme allowlist in `gate.check`; `gate.test.ts`                                                                                                                                                                                                                                                                                  |
-| userinfo / trailing-dot / IDN host confusion                                               | guarded + tested                                  | `gate.test.ts` adversarial cases                                                                                                                                                                                                                                                                                                  |
-| **DNS TOCTOU** (host string passes the gate, DNS resolves to a different IP at fetch time) | **documented limitation, out of scope by design** | the gate authorizes by **hostname**, and Node resolves DNS independently at fetch. For the challenge's isolated-lab scope (`allow.hosts` is `localhost`/loopback), there is no DNS to race. Pinning the resolved IP would be required for public targets — which are never in scope here (`AUTHORIZATION.md`). Named, not hidden. |
+| concern                                                                                                                 | status                                                      | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| in-scope → out-of-scope **redirect**                                                                                    | **guarded + tested**                                        | `fetchGated` follows redirects manually (`redirect:"manual"`), re-checks the gate on **every hop**, fails closed; method downgrade honored. `session-redirect.test.ts` reproduces an in-scope→127.0.0.1 redirect and asserts it never fires the request.                                                                                                                                                                                                                                      |
+| non-http(s) scheme (e.g. `gopher://`)                                                                                   | guarded + tested                                            | scheme allowlist in `gate.check`; `gate.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| userinfo / trailing-dot / IDN host confusion                                                                            | guarded + tested                                            | `gate.test.ts` adversarial cases                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **SSRF / rebind to an internal or metadata IP** (e.g. a redirect to `169.254.169.254`)                                  | **blocked by deny-by-default**                              | every hop's host must be in `allow.hosts`, and an **IP literal or any unlisted host is refused** (`AUTHORIZATION.md` §gate). Cloud-metadata and private IPs are never in an isolated lab's allow-list, so a redirect to one is dropped.                                                                                                                                                                                                                                                       |
+| **DNS TOCTOU on an allowed hostname** (the listed hostname's own DNS answer flips between the gate check and the fetch) | **narrow residual, tied to the isolated-lab authorization** | the gate authorizes by hostname and Node resolves DNS at fetch; a _listed_ hostname whose DNS flips to an internal IP would not be re-validated. This requires control of DNS for the authorized hostname — i.e. the operator attacking their own isolated lab (`AUTHORIZATION.md`: "isolated lab; that is the only class of target"). Full defense is per-request IP pinning; not implemented, named not hidden. The dangerous case (rebind to metadata) is already closed by the row above. |
 
 ## 5. Budget (implicit) — `gateway/budget.ts`, `gateway/bifrostClient.ts`, `loop/agent.ts`
 
@@ -116,26 +130,34 @@ States: `under → over → halted` (terminal).
 
 ## 6. Evidence store (implicit) — `evidence/store.ts`
 
-| concern                           | status        | evidence                                                                                                                                                                                                                                                |
-| --------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| half-recorded finding observable? | tolerated     | `record()` is a single synchronous `appendFileSync` of one line; a crash mid-write can leave a partial line, but `readFindings` wraps each line in `try/catch` + `safeParse` and **skips malformed lines** — a partial write never corrupts the report. |
-| duplicate finding in the report   | not reachable | see §2: `record()` only on `ok`, which `continue`s without re-queue.                                                                                                                                                                                    |
+| concern                           | status                  | evidence                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| half-recorded finding observable? | handled + **disclosed** | `record()` is a single synchronous `appendFileSync` of one line; a crash mid-write can leave a partial line. `readFindings` skips unparseable lines (a partial write never corrupts the report) **and counts them, emitting a visible `console.warn` when any are skipped** — a security trail never silently loses evidence; a reader is told it may be incomplete. |
+| duplicate finding in the report   | not reachable           | see §2: `record()` only on `ok`, which `continue`s without re-queue.                                                                                                                                                                                                                                                                                                 |
 
 ---
 
 ## Pressure-test scorecard (the critique's named bets)
 
-| claim                                        | verdict                                                            | class               |
-| -------------------------------------------- | ------------------------------------------------------------------ | ------------------- |
-| redirect in-scope→out-of-scope leak (TOCTOU) | **handled** — manual re-gate per hop + test                        | scope-leak (closed) |
-| concurrent login corrupts CSRF               | **not reachable** — sequential, single awaited login               | —                   |
-| concurrent budget check-then-spend overrun   | **not reachable** — sequential                                     | —                   |
-| unbounded retry                              | **bounded in code** — `maxRetries`                                 | —                   |
-| act after objective reached                  | **not reachable** — set flag + `break`, sequential                 | —                   |
-| double evidence write on retry               | **not possible** — record only on `ok` + `continue`                | —                   |
-| crash mid-evidence-write corrupts report     | **tolerated** — malformed lines skipped on read                    | cosmetic (closed)   |
-| session expiry read as a finding             | **was a gap, now guarded** — auth-wall rejection + regression test | reliability (fixed) |
-| DNS TOCTOU                                   | **documented limitation** — moot for loopback-only lab scope       | documented          |
-| soft budget cap overshoot                    | **documented** — bounded by one call, by design                    | documented          |
+| claim                                             | verdict                                                                                                    | class               |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------- |
+| redirect in-scope→out-of-scope leak (TOCTOU)      | **handled** — manual re-gate per hop + test                                                                | scope-leak (closed) |
+| concurrent login corrupts CSRF                    | **not reachable + CI-enforced** — sequential; `concurrency-guard.test.ts`                                  | —                   |
+| concurrent budget check-then-spend overrun        | **not reachable + CI-enforced** — sequential                                                               | —                   |
+| library-driven reentrancy (Playwright/cookie jar) | **not present** — no `page.on(...)`; jar mutated within the awaited fetch                                  | —                   |
+| unbounded retry                                   | **bounded in code** — `maxRetries`                                                                         | —                   |
+| hung request stalls the loop (no time bound)      | **closed** — per-request `AbortController` timeout; browser 10s waits                                      | reliability (fixed) |
+| act after objective reached                       | **not reachable** — set flag + `break`, sequential                                                         | —                   |
+| double evidence write on retry                    | **not possible** — record only on `ok` + `continue`                                                        | —                   |
+| crash mid-evidence-write silently drops a finding | **closed** — skipped lines counted + `console.warn`; disclosed, not hidden                                 | reliability (fixed) |
+| session expiry read as a finding                  | **guarded** — auth-wall (401/403 or login-screen) rejection; conservative heuristic + both-direction tests | reliability (fixed) |
+| auth-wall guard too aggressive (false negative)   | **guarded** — needs password field AND login affordance; lone password field still confirms                | reliability (fixed) |
+| SSRF / rebind to metadata/private IP              | **blocked** — deny-by-default refuses unlisted + IP-literal hosts                                          | scope-leak (closed) |
+| DNS TOCTOU on an allowed hostname                 | **narrow residual** — needs control of the authorized host's DNS; isolated-lab scope                       | documented          |
+| SPA 200-shell client-redirect to login            | **residual** — HTTP-tier body check can miss it; covered by Tier-2 browser                                 | documented          |
+| soft budget cap overshoot                         | **documented** — bounded by one call, by design                                                            | documented          |
 
-Update this file in the same PR as any change to the machines above.
+Update this file in the same PR as any change to the machines above. It is **not
+frozen**: it is re-run against whatever the cold dry-run (days 13–15) actually
+breaks — the test of the audit is whether it still holds the first time reality
+disagrees with it, not whether the table is internally consistent today.

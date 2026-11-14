@@ -554,11 +554,24 @@ async function commandInjectionCheck(
 // redirected to. A word from the objective echoing on a login screen ("Admin
 // login") is NOT the objective reached — treating it as a finding is the
 // classic session-expiry false positive on an unfamiliar target.
-const LOGIN_PAGE =
-  /<input[^>]+type=["']?password|name=["']?(?:password|passwd|pwd)\b|action=["'][^"']*\blog[-_]?in\b|(?:please\s+)?(?:log[\s-]?in|sign[\s-]?in)\s+to\s+(?:continue|your\s+account)/i;
+// A credential-entry field (strong) and a login affordance (strong). A LONE
+// password field is NOT enough — an admin page with a change-password widget has
+// one, and discarding that as "a login wall" would turn the false positive we
+// fixed into its mirror image (a real finding dropped). Require BOTH signals, so
+// only a page that is actually a login screen is treated as an auth wall.
+const PASSWORD_FIELD = /<input[^>]+type=["']?password|name=["']?(?:password|passwd|pwd)\b/i;
+const LOGIN_AFFORDANCE =
+  /action=["'][^"']*\blog[-_]?in\b|\b(?:log[\s-]?in|sign[\s-]?in)\s+to\s+(?:continue|your\s+account|proceed)|<(?:h1|h2|title)[^>]*>[^<]*\b(?:log[\s-]?in|sign[\s-]?in)\b/i;
 
+// An auth wall: an auth-failure status (robust, content-independent), or a body
+// that is unmistakably a login screen (credential field AND a login affordance).
+// Status 401/403 is the primary signal; the body heuristic only corroborates the
+// redirect-to-a-200-login-page case and is deliberately conservative. A SPA that
+// returns a 200 shell and redirects to login client-side can still slip past the
+// HTTP-tier body check — a documented residual, covered by the Tier-2 browser.
 function isAuthWall(status: number, body: string): boolean {
-  return status === 401 || status === 403 || LOGIN_PAGE.test(body);
+  if (status === 401 || status === 403) return true;
+  return PASSWORD_FIELD.test(body) && LOGIN_AFFORDANCE.test(body);
 }
 
 /** GET `url` and report whether a reachable page matches the objective tokens. */
