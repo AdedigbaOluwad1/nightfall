@@ -557,19 +557,26 @@ function isMutatingSurface(opts: AttemptOpts): boolean {
 }
 
 // The parameters/fields to probe on this endpoint, bounded so a wide form never
-// explodes the step budget. A discovered POST form → its own fields; a GET that
-// already carries a query → its existing parameters; nothing to go on → a single
-// undefined target, which falls back to the conventional key on the search
-// surface (the first target's shape), preserving the original behavior.
+// explodes the step budget. A POST form → its own fields only (its query string is
+// routing, not a body input). A GET → the UNION of its captured fields and its
+// existing query parameters: a page can carry both an injectable form field (a
+// search box) and an injectable router/query param (the LFI-prone `?page=` of a
+// router app, or a spec-declared query param), and probing only one masks the
+// other. Nothing to go on → a single undefined target, which falls back to the
+// conventional key on the search surface (the first target's shape).
 function candidateFields(opts: AttemptOpts): Array<string | undefined> {
-  if (opts.fields?.length) return opts.fields.slice(0, 3);
+  const fields = opts.fields ?? [];
+  if (opts.method === "POST") return fields.length > 0 ? fields.slice(0, 3) : [undefined];
+  const out: Array<string | undefined> = [...fields];
   try {
-    const keys = [...new URL(opts.url).searchParams.keys()];
-    if (keys.length > 0) return keys.slice(0, 3);
+    for (const k of new URL(opts.url).searchParams.keys()) {
+      if (!out.includes(k)) out.push(k);
+    }
   } catch {
     /* fall through */
   }
-  return [undefined];
+  if (out.length === 0) return [undefined];
+  return out.slice(0, 3);
 }
 
 /** A read-only probe that would have to POST into a mutating form is skipped. */
