@@ -38,6 +38,35 @@ The default `run` drives the full autonomous loop against a lab (bring one up wi
 It writes findings to `nightfall-findings.jsonl` and auto-writes a Markdown report
 beside it.
 
+## Testing an auth-gated target
+
+To test a login-gated app, add a `credentials` block to the scope file. The agent fetches
+the login page, **auto-detects the form** — carrying any hidden CSRF token and the submit
+control verbatim — posts the credentials, and then **verifies the session actually took**:
+the trace shows a green `authenticated` or a red `LOGIN FAILED — probing continues
+UNAUTHENTICATED`, so a broken login is never silently reported as an honest clean scan.
+
+```yaml
+# add to your scope file (array — one entry per auth boundary)
+credentials:
+  - boundary: user # a logical auth-boundary label; does NOT widen scope
+    loginUrl: "http://localhost:8095/login.php"
+    username: "admin"
+    password: "password"
+```
+
+```bash
+pnpm --filter @nightfall/cli dev -- --scope my-authed.scope.yaml
+```
+
+Credentials authenticate an authorized test; they never relax the deny-by-default gate.
+The login flow generalises across form shapes with no per-app tuning — a hidden-token +
+named-submit form (DVWA), a `<button name=…>` submit (bWAPP), and a Spring Security form
+with no submit button and no CSRF (WebGoat) all authenticate; a JS-driven login escalates
+to the Tier-2 headless browser, which verifies the session the same way. Once in, every
+probe runs with the authenticated session — these are the `credentialed` rows in
+[Results across labs](#results-across-labs).
+
 ## Demo beats (reproducible)
 
 The two model-free beats run from a clean clone with no lab and no API quota — each is
