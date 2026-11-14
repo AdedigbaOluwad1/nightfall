@@ -42,6 +42,13 @@ export function attachRenderer(): void {
         `  ${e.component} ${e.version} — degraded, running ungrounded · ${e.reason}`,
     ),
   );
+  bus.on("plan.decision", (e) =>
+    console.log(
+      "  " +
+        pc.blue(`▸ plan`) +
+        `  ${e.chose}${e.fallback ? pc.dim(" (deterministic)") : ""}\n    ${pc.dim(`└ ${e.reason}`)}`,
+    ),
+  );
   bus.on("exploit.attempt", (e) =>
     console.log(`  ${tag.exploit(`▸ exploit`)}  #${e.n} ${e.technique}`),
   );
@@ -63,6 +70,17 @@ export function attachRenderer(): void {
   bus.on("finding.confirmed", (e) =>
     console.log(`  ${tag.finding(`✓ finding`)}  ${e.title} · ${e.severity}`),
   );
+  bus.on("chain.step", (e) => {
+    const flow = [
+      e.consumed ? `uses ${e.consumed}` : undefined,
+      e.produced ? `yields ${e.produced}` : undefined,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    console.log(
+      `    ${pc.bold(pc.magenta(`⛓ chain`))}  step ${e.step} · ${e.via}${flow ? ` · ${flow}` : ""}`,
+    );
+  });
   bus.on("objective.reached", (e) =>
     console.log(
       "  " +

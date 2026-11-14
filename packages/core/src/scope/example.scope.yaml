@@ -1,5 +1,5 @@
 target: "http://localhost:3000/"
-objective: "Reach the admin dashboard"
+objective: "Gain authenticated administrative access to the application"
 allow:
   hosts: ["localhost"]
   paths: ["/"]

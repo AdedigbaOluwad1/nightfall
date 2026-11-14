@@ -16,7 +16,10 @@ export {
   type AblationRow,
   type FrozenTarget,
   formatAblationTable,
+  formatRegrounding,
+  type RegroundingSummary,
   runAblation,
+  summarizeRegrounding,
 } from "./hypothesis/ablation.js";
 export {
   type PrecisionOptions,

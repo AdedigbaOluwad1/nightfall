@@ -23,6 +23,7 @@ export interface NightfallEvents {
   };
   "hypothesis.ranked": { candidates: number; grounded: boolean };
   "hypothesis.failed": { component: string; version: string; reason: string };
+  "plan.decision": { chose: string; reason: string; fallback: boolean };
   "exploit.attempt": { technique: string; target: string; n: number };
   "exploit.interpret": { decision: "retry" | "escalate" | "abandon" | "pivot"; note: string };
   "gateway.call": {
@@ -35,6 +36,13 @@ export interface NightfallEvents {
   "session.login": { boundary: string; tier: 1 | 2 };
   "budget.exceeded": { capUsd: number; spentUsd: number; stage: "hypothesis" | "attempt" };
   "finding.confirmed": { id: string; title: string; severity: Severity };
+  "chain.step": {
+    step: number;
+    via: string;
+    produced?: string;
+    consumed?: string;
+    note: string;
+  };
   "objective.reached": { via: string; steps: number; costUsd: number };
   "run.end": {
     runId: string;
