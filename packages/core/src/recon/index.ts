@@ -17,6 +17,8 @@ export interface ReconEndpoint {
   url: string;
   method: "GET" | "POST";
   hasParams: boolean;
+  /** Named, injectable form fields (text-like inputs + textareas), if a form. */
+  fields?: string[];
 }
 
 export interface ReconResult {
@@ -24,8 +26,15 @@ export interface ReconResult {
   endpoints: ReconEndpoint[];
 }
 
-/** Bounds so a cold run never crawls forever. */
-const CRAWL_LIMIT = 12;
+/** Bounds so a cold run never crawls forever. Deep enough to follow an
+ *  authenticated app's menu (e.g. a learn/tutorial hub) to the real surface it
+ *  links to, while still terminating. Recon is HTTP-only (no model calls), so a
+ *  larger ceiling costs crawl time, not budget. */
+const CRAWL_LIMIT = 30;
+
+/** Input types that are NOT a text sink an injection probe would target. */
+const NON_INJECTABLE =
+  /^(?:submit|button|reset|image|file|checkbox|radio|hidden|password|color|range)$/i;
 
 /** Low-noise discovery paths worth a direct look (all still gate-checked). */
 const KNOWN_PATHS = ["/", "/robots.txt", "/login", "/admin", "/sitemap.xml"];
@@ -98,6 +107,11 @@ export async function recon(
       const $ = cheerio.load(res.body);
       $("a[href]").each((_, el) => enqueue($(el).attr("href") ?? ""));
       $("script[src]").each((_, el) => enqueue($(el).attr("src") ?? ""));
+      // Markdown link targets, e.g. `[User Search](/app/usersearch)`. A docs- or
+      // tutorial-style app often renders its real surface from markdown on the
+      // client (showdown, marked), so the links exist only as source in the raw
+      // HTML — invisible to an <a href> crawl, but a genuine in-scope surface.
+      for (const m of res.body.matchAll(/\]\((\/[^)\s"']+)\)/g)) enqueue(m[1] ?? "");
       $("form").each((_, el) => {
         const action = $(el).attr("action") ?? url;
         const method = ($(el).attr("method") ?? "GET").toUpperCase() === "POST" ? "POST" : "GET";
@@ -108,13 +122,27 @@ export async function recon(
           return;
         }
         if (!gate.check(abs).allowed) return;
-        endpoints.set(`${method} ${abs}`, { url: abs, method, hasParams: true });
+        const fields: string[] = [];
+        $(el)
+          .find("input,textarea,select")
+          .each((_i, input) => {
+            const name = $(input).attr("name");
+            const type = $(input).attr("type") ?? "text";
+            if (name && !NON_INJECTABLE.test(type) && !fields.includes(name)) fields.push(name);
+          });
+        endpoints.set(`${method} ${abs}`, {
+          url: abs,
+          method,
+          hasParams: true,
+          ...(fields.length > 0 ? { fields } : {}),
+        });
       });
     }
 
     const parsed = new URL(url);
-    if (parsed.search && !MUTATING_LINK.test(url)) {
-      endpoints.set(`GET ${url}`, { url, method: "GET", hasParams: true });
+    const getKey = `GET ${url}`;
+    if (parsed.search && !MUTATING_LINK.test(url) && !endpoints.has(getKey)) {
+      endpoints.set(getKey, { url, method: "GET", hasParams: true });
     }
   }
 
