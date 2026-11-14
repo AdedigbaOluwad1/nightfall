@@ -36,6 +36,8 @@ export interface ReconEndpoint {
   hasParams: boolean;
   /** Named, injectable form fields (text-like inputs + textareas), if a form. */
   fields?: string[];
+  /** Every named control with its default value, to resubmit the complete form. */
+  formData?: Record<string, string>;
   /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
   graphql?: GraphQLProbe;
 }
@@ -142,18 +144,33 @@ export async function recon(
         }
         if (!gate.check(abs).allowed) return;
         const fields: string[] = [];
+        // Capture every named control with its default value, so a probe can
+        // resubmit the COMPLETE form with only the target field changed. Many apps
+        // gate processing on a submit button or a sibling field being present (DVWA's
+        // SQLi runs only when `Submit` is set), so injecting one field in isolation
+        // silently does nothing. `fields` stays the injectable text sinks only.
+        const formData: Record<string, string> = {};
         $(el)
           .find("input,textarea,select")
           .each((_i, input) => {
             const name = $(input).attr("name");
-            const type = $(input).attr("type") ?? "text";
-            if (name && !NON_INJECTABLE.test(type) && !fields.includes(name)) fields.push(name);
+            if (!name) return;
+            const type = ($(input).attr("type") ?? "text").toLowerCase();
+            if (type === "checkbox" || type === "radio") {
+              if ($(input).attr("checked") !== undefined) {
+                formData[name] = $(input).attr("value") ?? "on";
+              }
+            } else {
+              formData[name] = $(input).attr("value") ?? "";
+            }
+            if (!NON_INJECTABLE.test(type) && !fields.includes(name)) fields.push(name);
           });
         endpoints.set(`${method} ${abs}`, {
           url: abs,
           method,
           hasParams: true,
           ...(fields.length > 0 ? { fields } : {}),
+          ...(Object.keys(formData).length > 0 ? { formData } : {}),
         });
       });
     }

@@ -35,6 +35,8 @@ export interface AttemptOpts {
   method?: "GET" | "POST";
   /** Named injectable form fields recon captured, for a form-aware probe. */
   fields?: string[];
+  /** Every named control with its default value, to resubmit the complete form. */
+  formData?: Record<string, string>;
   /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
   graphql?: GraphQLProbe;
   /** The session carries operator-provided credentials (an authenticated run).
@@ -530,16 +532,33 @@ function injectionRequest(
     return { req: { url: injected }, label: `GET ${injected}` };
   }
   if (opts.method === "POST" && field) {
-    const body = new URLSearchParams({ [field]: value }).toString();
+    // Resubmit the complete form (submit button + sibling fields at their defaults)
+    // with the target field replaced, so an app that gates on a submit/sibling field
+    // actually processes the request. Falls back to the lone field when nothing else
+    // was captured.
+    const params = new URLSearchParams(opts.formData ?? {});
+    params.set(field, value);
     return {
       req: {
         url: opts.url,
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
+        body: params.toString(),
       },
       label: `POST ${opts.url}  ${field}=${value}`,
     };
+  }
+  // A GET form with other controls (e.g. DVWA's `?id=…&Submit=Submit`): resubmit the
+  // whole form in the query string with the target field replaced.
+  if (field && opts.formData && Object.keys(opts.formData).length > 1) {
+    try {
+      const u = new URL(opts.url);
+      for (const [k, v] of Object.entries(opts.formData)) if (k !== field) u.searchParams.set(k, v);
+      u.searchParams.set(field, value);
+      return { req: { url: u.toString() }, label: `GET ${u.toString()}` };
+    } catch {
+      /* fall through to single-param injection */
+    }
   }
   let url = opts.url;
   let key = defaultKey;

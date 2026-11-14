@@ -36,6 +36,8 @@ interface WorkItem {
   method?: "GET" | "POST";
   /** Injectable form fields recon captured, for a form-aware probe. */
   fields?: string[];
+  /** Every named control with its default value, to resubmit the complete form. */
+  formData?: Record<string, string>;
   /** A GraphQL Query-field argument to inject into, when this targets a GraphQL endpoint. */
   graphql?: GraphQLProbe;
   /** Finding id of the step that seeded this one — the attack-graph edge. */
@@ -128,7 +130,13 @@ export function scopeId(scope: ScopeFile): string {
 async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise<void> {
   const sid = scopeId(scope);
   const primary = deps.session;
-  await primary.login().catch(() => undefined); // an unauthenticated session is still valid
+  // Attempt login if credentials were provided. A run with no credentials is a valid
+  // unauthenticated run (login() returns without a throw). When credentials WERE given
+  // and login fails to authenticate, login() emits session.login {ok:false} (rendered
+  // loudly) and throws: we catch so the run can still probe any unauthenticated
+  // surface, but the failure is on the event stream — never swallowed into a "0
+  // findings" that looks like an honest clean scan. The failure mode we must not hide.
+  await primary.login().catch(() => undefined);
 
   let budgetAnnounced = false;
   const announceBudget = (stage: "hypothesis" | "attempt"): void => {
@@ -231,6 +239,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           url: ep.url,
           method: ep.method,
           fields: ep.fields,
+          formData: ep.formData,
           graphql: ep.graphql,
           tier: 1,
           retries: 0,
@@ -311,6 +320,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           url: item.url,
           method: item.method,
           fields: item.fields,
+          formData: item.formData,
           graphql: item.graphql,
           authenticated: scope.credentials.length > 0,
           objectiveHint: hint,

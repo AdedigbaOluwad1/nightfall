@@ -555,6 +555,58 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
     expect(bodies.some((b) => b.includes("systemDebug(arg:") && b.includes("; id"))).toBe(true);
   });
 
+  it("resubmits a complete GET form (submit button + siblings) when a field gates on it (DVWA)", async () => {
+    const seen: string[] = [];
+    const dvwaLike = new StubSession((req) => {
+      seen.push(req.url);
+      const u = new URL(req.url);
+      // Mimics DVWA: the query is processed only when the Submit button is present.
+      if (
+        u.searchParams.get("Submit") === "Submit" &&
+        (u.searchParams.get("id") ?? "").includes("'")
+      ) {
+        return { body: "You have an error in your SQL syntax" };
+      }
+      return { body: "<form></form>" };
+    });
+    const hit = await attempt(
+      dvwaLike,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:9/vulnerabilities/sqli/",
+        method: "GET",
+        fields: ["id"],
+        formData: { id: "", Submit: "Submit" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(seen.some((u) => u.includes("Submit=Submit") && u.includes("id="))).toBe(true);
+  });
+
+  it("resubmits a complete POST form including the submit button in the body", async () => {
+    const bodies: string[] = [];
+    const gated = new StubSession((req) => {
+      bodies.push(req.body ?? "");
+      const sent = new URLSearchParams(req.body ?? "");
+      if (sent.get("btnSign") === "Sign" && (sent.get("entry") ?? "").includes("'")) {
+        return { body: "error in your SQL syntax near" };
+      }
+      return { body: "ok" };
+    });
+    const hit = await attempt(
+      gated,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:9/sqli_6.php",
+        method: "POST",
+        fields: ["entry"],
+        formData: { entry: "", btnSign: "Sign" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(bodies.some((b) => b.includes("btnSign=Sign") && b.includes("entry="))).toBe(true);
+  });
+
   it("confirms SQL injection surfaced in a GraphQL errors array", async () => {
     const gqlSqli = new StubSession((req) =>
       inputOf(req).includes("'")
