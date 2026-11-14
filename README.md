@@ -123,6 +123,13 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.
   grounding off, the bare model still cites CVEs but **0/2 are valid** (hallucinated).
   Both runs reach the objective via the deterministic chain — grounding is what keeps
   the expanding surface real and current. Measured by `ablate` (active-disclosure row).
+- **The re-grounding is a generic mechanism, not Juice-Shop logic.** Any confirmed
+  probe that surfaces a new `component@version` re-queries Tavily for it (deduped,
+  budget-guarded) — there is no per-lab branch (`loop/agent.ts`). What feeds it
+  mid-chain today is one disclosure extractor: the injection error-page banner (the
+  `(framework version)` shape an error leaks). Passive recon still fingerprints headers,
+  cookies, and `generator` meta generically at the start; broadening the set of
+  _mid-chain_ leak patterns is additive and named in [LIMITATIONS.md](./LIMITATIONS.md).
 
 How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL.md).
 
