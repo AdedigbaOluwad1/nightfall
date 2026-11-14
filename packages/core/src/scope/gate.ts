@@ -34,6 +34,10 @@ export class ScopeGate {
       return { allowed: false, reason: "unparseable URL" };
     }
 
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return { allowed: false, reason: `scheme ${url.protocol} not allowed (http/https only)` };
+    }
+
     const host = url.hostname;
     if (!this.scope.allow.hosts.includes(host)) {
       return { allowed: false, reason: `host ${host} not in allow.hosts` };

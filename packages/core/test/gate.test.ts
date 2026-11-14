@@ -56,4 +56,22 @@ describe("ScopeGate — adversarial inputs a judge will try", () => {
     expect(gate.check("http://localhost:3000/app/admin/delete").allowed).toBe(false);
     expect(gate.check("http://localhost:3000/app/admin/deletion").allowed).toBe(true);
   });
+
+  it("blocks a non-http(s) scheme even to an in-scope host", () => {
+    expect(gate.check("gopher://localhost:6379/app").allowed).toBe(false);
+    expect(gate.check("file:///app").allowed).toBe(false);
+    expect(gate.check("javascript:alert(1)//localhost/app").allowed).toBe(false);
+  });
+
+  it("allows https to an in-scope host", () => {
+    expect(gate.check("https://localhost/app/x").allowed).toBe(true);
+  });
+
+  it("blocks a trailing-dot FQDN variant of an in-scope host", () => {
+    expect(gate.check("http://localhost./app").allowed).toBe(false);
+  });
+
+  it("blocks an IDN homograph of an in-scope host", () => {
+    expect(gate.check("http://xn--localhost-/app").allowed).toBe(false);
+  });
 });
