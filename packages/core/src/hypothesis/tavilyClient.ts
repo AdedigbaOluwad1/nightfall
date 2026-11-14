@@ -2,6 +2,7 @@ import { tavily } from "@tavily/core";
 import { bus } from "../events/bus.js";
 import { Gateway } from "../gateway/bifrostClient.js";
 import { Budget } from "../gateway/budget.js";
+import { fenceUntrusted, sanitizeToken, UNTRUSTED_NOTICE } from "../gateway/promptSafety.js";
 
 export interface Candidate {
   technique: string;
@@ -76,12 +77,15 @@ function buildPrompt(component: string, version: string, advisories?: Advisory[]
   const context =
     advisories && advisories.length > 0
       ? `Known advisories (retrieved live):\n${advisories
-          .map((a) => `- ${a.cve}: ${a.title} (${a.url})`)
-          .join("\n")}\n\n`
+          .map(
+            (a) =>
+              `- ${sanitizeToken(a.cve)}: ${fenceUntrusted(a.title)} (${sanitizeToken(a.url)})`,
+          )
+          .join("\n")}\n\n${UNTRUSTED_NOTICE}\n\n`
       : "";
   return (
     `You are a web-application security analyst assessing an authorized lab target.\n` +
-    `The target is running ${component} version ${version}.\n\n` +
+    `The target is running ${sanitizeToken(component)} version ${sanitizeToken(version)}.\n\n` +
     context +
     `List up to 5 candidate vulnerability techniques worth investigating, each tied to a ` +
     `specific CVE id when one applies to this exact version.\n` +
