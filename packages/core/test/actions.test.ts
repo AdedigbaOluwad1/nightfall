@@ -512,4 +512,24 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
     );
     expect(xssHit.ok).toBe(true);
   });
+
+  it("injects into an OpenAPI path parameter, not as a query string (REST API SQLi)", async () => {
+    const seen: string[] = [];
+    const pathSqli = new StubSession((req) => {
+      seen.push(req.url);
+      return inputOf(req).includes("'")
+        ? { body: "sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unrecognized token" }
+        : { body: '{"username":"name1"}' };
+    });
+    const hit = await attempt(
+      pathSqli,
+      "SQL Injection",
+      opts({ url: "http://localhost:9/users/v1/{username}", fields: ["username"] }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/username/);
+    // The payload must land in the path segment, never appended as ?username=.
+    expect(seen.some((u) => u.includes("/users/v1/'"))).toBe(true);
+    expect(seen.every((u) => !u.includes("?username="))).toBe(true);
+  });
 });

@@ -146,6 +146,16 @@ export async function recon(
     }
   }
 
+  // API surface: a JSON/REST API publishes no crawlable HTML, so the HTML crawl
+  // above finds nothing — its real endpoints live in a machine-readable contract.
+  // If the app serves an OpenAPI/Swagger spec, read it to enumerate those routes
+  // and the injectable inputs (path and query parameters) the crawl never saw.
+  for (const ep of await openApiEndpoints(session, gate, origin)) {
+    const key = `${ep.method} ${ep.url}`;
+    if (!endpoints.has(key)) endpoints.set(key, ep);
+    bus.emit("recon.found", { endpoint: ep.url });
+  }
+
   // Real-tool enrichment — best-effort, never on the critical path.
   for (const fp of await techDetect(origin, gate)) fingerprints.push(fp);
 
@@ -158,6 +168,122 @@ export async function recon(
     });
   }
   return { fingerprints: merged, endpoints: [...endpoints.values()] };
+}
+
+/** Conventional locations an app serves its OpenAPI/Swagger contract from. */
+const SPEC_PATHS = [
+  "/openapi.json",
+  "/swagger.json",
+  "/v3/api-docs",
+  "/v2/api-docs",
+  "/api-docs",
+  "/swagger/v1/swagger.json",
+  "/api/openapi.json",
+];
+
+/** Cap on endpoints ingested from one spec, so a huge contract can't unbound the queue. */
+const SPEC_ENDPOINT_LIMIT = 40;
+
+/**
+ * Discover a REST API's endpoints from its OpenAPI/Swagger contract. A JSON API
+ * publishes no crawlable HTML, so the contract is the only place its surface is
+ * visible over plain HTTP. Read-only: only GET operations are emitted (a GET
+ * carries read semantics; state-changing bodies are left to a later reviewed
+ * increment), each with its injectable path and query parameters. Every spec
+ * location and resolved URL is gate-checked. A missing or malformed spec yields
+ * nothing, never a throw.
+ */
+async function openApiEndpoints(
+  session: Session,
+  gate: ScopeGate,
+  origin: string,
+): Promise<ReconEndpoint[]> {
+  for (const p of SPEC_PATHS) {
+    const url = origin + p;
+    if (!gate.check(url).allowed) continue;
+    let body: string;
+    let status: number;
+    try {
+      const r = await session.request({ url });
+      status = r.status;
+      body = r.body;
+    } catch {
+      continue;
+    }
+    if (status >= 400 || !body.trimStart().startsWith("{")) continue;
+    let spec: unknown;
+    try {
+      spec = JSON.parse(body);
+    } catch {
+      continue;
+    }
+    const endpoints = specToEndpoints(spec, origin, gate);
+    if (endpoints.length > 0) return endpoints;
+  }
+  return [];
+}
+
+/** The URL prefix a spec mounts its paths under (OpenAPI 3 `servers`, Swagger 2 `basePath`). */
+function specBasePath(spec: Record<string, unknown>): string {
+  const servers = spec.servers;
+  if (Array.isArray(servers) && servers[0] && typeof servers[0] === "object") {
+    const u = (servers[0] as { url?: unknown }).url;
+    if (typeof u === "string" && u) {
+      try {
+        const path = u.startsWith("http") ? new URL(u).pathname : u;
+        return path === "/" ? "" : path.replace(/\/$/, "");
+      } catch {
+        return "";
+      }
+    }
+  }
+  if (typeof spec.basePath === "string") {
+    return spec.basePath === "/" ? "" : spec.basePath.replace(/\/$/, "");
+  }
+  return "";
+}
+
+/** Turn a parsed OpenAPI/Swagger document into gated, GET-only injectable endpoints. */
+function specToEndpoints(spec: unknown, origin: string, gate: ScopeGate): ReconEndpoint[] {
+  if (!spec || typeof spec !== "object") return [];
+  const s = spec as Record<string, unknown>;
+  if (!s.paths || typeof s.paths !== "object") return [];
+  const base = specBasePath(s);
+  const out: ReconEndpoint[] = [];
+  for (const [rawPath, item] of Object.entries(s.paths as Record<string, unknown>)) {
+    if (out.length >= SPEC_ENDPOINT_LIMIT) break;
+    if (!item || typeof item !== "object") continue;
+    const pathItem = item as Record<string, unknown>;
+    const op = pathItem.get; // read-only: GET operations only
+    if (!op || typeof op !== "object") continue;
+    const sharedParams = Array.isArray(pathItem.parameters) ? pathItem.parameters : [];
+    const opParams = Array.isArray((op as Record<string, unknown>).parameters)
+      ? ((op as Record<string, unknown>).parameters as unknown[])
+      : [];
+    const fields: string[] = [];
+    for (const prm of [...sharedParams, ...opParams]) {
+      if (!prm || typeof prm !== "object") continue;
+      const name = (prm as { name?: unknown }).name;
+      const loc = (prm as { in?: unknown }).in;
+      if (
+        typeof name === "string" &&
+        (loc === "path" || loc === "query") &&
+        !fields.includes(name)
+      ) {
+        fields.push(name);
+      }
+    }
+    // An undeclared path template ({id}) is still an injectable input.
+    for (const m of rawPath.matchAll(/\{([^}]+)\}/g)) {
+      const n = m[1];
+      if (n && !fields.includes(n)) fields.push(n);
+    }
+    if (fields.length === 0) continue;
+    const url = origin + base + rawPath;
+    if (!gate.check(url.replace(/\{[^}]+\}/g, "1")).allowed) continue;
+    out.push({ url, method: "GET", hasParams: true, fields });
+  }
+  return out;
 }
 
 /**

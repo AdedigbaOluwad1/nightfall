@@ -500,6 +500,15 @@ function injectionRequest(
   value: string,
   defaultKey = "q",
 ): { req: SessionRequest; label: string } {
+  // An OpenAPI path parameter ({username}) is injected by substituting the payload
+  // into that path segment, with any other template filled by a benign placeholder
+  // so the route still resolves. This is always a GET (read semantics).
+  if (field && opts.url.includes(`{${field}}`)) {
+    const injected = opts.url
+      .replace(`{${field}}`, encodeURIComponent(value))
+      .replace(/\{[^}]+\}/g, "1");
+    return { req: { url: injected }, label: `GET ${injected}` };
+  }
   if (opts.method === "POST" && field) {
     const body = new URLSearchParams({ [field]: value }).toString();
     return {
@@ -553,7 +562,7 @@ function isMutatingSurface(opts: AttemptOpts): boolean {
 // undefined target, which falls back to the conventional key on the search
 // surface (the first target's shape), preserving the original behavior.
 function candidateFields(opts: AttemptOpts): Array<string | undefined> {
-  if (opts.method === "POST" && opts.fields?.length) return opts.fields.slice(0, 3);
+  if (opts.fields?.length) return opts.fields.slice(0, 3);
   try {
     const keys = [...new URL(opts.url).searchParams.keys()];
     if (keys.length > 0) return keys.slice(0, 3);
