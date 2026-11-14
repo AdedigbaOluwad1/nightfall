@@ -17,5 +17,13 @@ export const Finding = z.object({
   cvssScore: z.number().optional(),
   evidence: z.array(Evidence),
   remediation: z.string().default(""),
+  /** Position in the attack chain (1-based); absent for standalone findings. */
+  step: z.number().optional(),
+  /** Id of the finding this one chained from — the attack-graph edge. */
+  parentId: z.string().optional(),
+  /** Label of the artifact this step consumed from its parent. */
+  consumed: z.string().optional(),
+  /** Labels of the artifacts this step produced for later steps. */
+  produced: z.array(z.string()).optional(),
 });
 export type Finding = z.infer<typeof Finding>;

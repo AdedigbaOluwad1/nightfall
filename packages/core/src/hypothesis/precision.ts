@@ -41,6 +41,9 @@ export async function precisionAtK(
     for (let r = 0; r < repeats; r++) {
       const found: Finding[] = [];
       await runLoop(scope, gate, gateway, {
+        // Deterministic candidate order — precision attributes a finding to a
+        // specific technique, so the model planner must not reorder here.
+        plan: async () => undefined,
         ...override,
         hypothesize: async () => [candidate],
         record: (f) => found.push(f),

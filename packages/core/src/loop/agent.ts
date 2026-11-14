@@ -12,8 +12,16 @@ import type { ScopeFile } from "../scope/schema.js";
 import { BrowserSession } from "../session/browserSession.js";
 import { HttpSession } from "../session/httpSession.js";
 import type { Session } from "../session/index.js";
-import { type AttemptOpts, type AttemptResult, attempt, findingProfile } from "./actions.js";
+import {
+  type AttemptOpts,
+  type AttemptResult,
+  attempt,
+  findingProfile,
+  T_AUTH_BYPASS,
+} from "./actions.js";
+import { type AttackContext, newContext } from "./context.js";
 import { interpret } from "./interpret.js";
+import { makeGatewayPlanner, type Planner } from "./planner.js";
 import { initialState, type RunState } from "./state.js";
 
 interface WorkItem {
@@ -22,6 +30,10 @@ interface WorkItem {
   tier: 1 | 2;
   retries: number;
   cve?: string;
+  /** Finding id of the step that seeded this one — the attack-graph edge. */
+  parentId?: string;
+  /** 1-based position in the chain. */
+  step: number;
 }
 
 /** Everything the loop needs, injectable so the north-star is testable offline. */
@@ -32,6 +44,8 @@ export interface LoopDeps {
   attempt: (session: Session, technique: string, opts: AttemptOpts) => Promise<AttemptResult>;
   /** Build a higher-capability (Tier-2) session on demand; undefined = none. */
   escalate?: () => Promise<Session | undefined>;
+  /** Model-driven next-action selector; undefined = pure deterministic order. */
+  plan?: Planner;
   record: (finding: Finding) => void;
   budgetUsd: number;
   maxRetries: number;
@@ -64,6 +78,7 @@ function objectiveTokens(objective: string): string[] {
 function toFinding(item: WorkItem, result: AttemptResult): Finding {
   const profile = findingProfile(item.technique, item.cve);
   const cveTag = item.cve ? ` (${item.cve})` : "";
+  const produced = result.discovered?.map((a) => a.label);
   return {
     id: crypto.randomUUID(),
     title: `${profile.name} at ${item.url}${cveTag}`,
@@ -75,6 +90,10 @@ function toFinding(item: WorkItem, result: AttemptResult): Finding {
       ? [{ ...result.evidence, note: result.evidence.note ?? result.note }]
       : [{ request: `GET ${item.url}`, response: "", note: result.note }],
     remediation: profile.remediation,
+    step: item.step,
+    parentId: item.parentId,
+    consumed: result.consumed,
+    produced: produced && produced.length > 0 ? produced : undefined,
   };
 }
 
@@ -114,6 +133,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
 
   const hint = objectiveTokens(scope.objective);
   const probeUrl = reconResult.endpoints[0]?.url ?? scope.target;
+  const context: AttackContext = newContext(scope.objective, hint);
   const queue: WorkItem[] = [];
 
   // Grounded hypotheses per fingerprint — best-effort; a budget stop here just
@@ -132,18 +152,31 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
       bus.emit("hypothesis.failed", { component: fp.component, version: fp.version, reason });
     }
     for (const c of candidates) {
-      queue.push({ technique: c.technique, url: probeUrl, tier: 1, retries: 0, cve: c.cve });
+      queue.push({
+        technique: c.technique,
+        url: probeUrl,
+        tier: 1,
+        retries: 0,
+        cve: c.cve,
+        step: 1,
+      });
     }
   }
 
+  // Deterministic chain seed: an authentication-bypass attempt that runs even
+  // when grounding is unavailable, so the flagship chain never depends on the
+  // model proposing it. A confirmation here seeds the authenticated follow-up.
+  queue.push({ technique: T_AUTH_BYPASS, url: scope.target, tier: 1, retries: 0, step: 1 });
+
   // Always probe the discovered surface + the target itself for broken access.
   for (const ep of reconResult.endpoints) {
-    queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0 });
+    queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
   }
-  queue.push({ technique: "access-probe", url: scope.target, tier: 1, retries: 0 });
+  queue.push({ technique: "access-probe", url: scope.target, tier: 1, retries: 0, step: 1 });
 
   let tier2: Session | undefined;
   let escalated = false;
+  const confirmed: { title: string; severity: string }[] = [];
 
   try {
     while (queue.length > 0 && !state.objectiveReached) {
@@ -153,9 +186,44 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
       }
       if (overBudget("attempt")) break;
 
+      // Plan: let the model choose the next action from the pending queue,
+      // reasoning over the world-model. Front-of-queue is the deterministic
+      // floor — a failed, invalid, or budget-stopped plan never stalls the run.
+      if (deps.plan && queue.length > 1) {
+        let decision: Awaited<ReturnType<NonNullable<LoopDeps["plan"]>>> | undefined;
+        try {
+          decision = await deps.plan({
+            objective: scope.objective,
+            artifacts: context.artifacts.map((a) => ({ kind: a.kind, label: a.label })),
+            findings: confirmed,
+            pending: queue.map((q) => ({ technique: q.technique, url: q.url })),
+          });
+        } catch (err) {
+          if (err instanceof BudgetExceededError) {
+            announceBudget("attempt");
+            break;
+          }
+          decision = undefined;
+        }
+        if (decision && decision.pick > 0 && decision.pick < queue.length) {
+          const [chosen] = queue.splice(decision.pick, 1);
+          if (chosen) queue.unshift(chosen);
+        }
+        bus.emit("plan.decision", {
+          chose: queue[0]?.technique ?? "(none)",
+          reason: decision?.reason ?? "next queued action",
+          fallback: !decision,
+        });
+      }
+
       const item = queue.shift();
       if (!item) break;
       state.steps++;
+      // Mark this (technique, url) attempted — used to stop a later step from
+      // re-seeding one already run (the chain's cycle guard). Retries re-queue
+      // the same item directly and are bounded by maxRetries, so they are
+      // unaffected by this.
+      context.visited.add(`${item.technique}|${item.url}`);
 
       const session = item.tier === 2 && tier2 ? tier2 : primary;
       bus.emit("exploit.attempt", { technique: item.technique, target: item.url, n: state.steps });
@@ -166,6 +234,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           useSession: true,
           url: item.url,
           objectiveHint: hint,
+          context,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -181,15 +250,59 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           title: finding.title,
           severity: finding.severity,
         });
-        bus.emit("exploit.interpret", { decision: "pivot", note: "confirmed; pivot" });
-        // A confirmed objective-signal finding reaches the objective.
-        state.objectiveReached = true;
-        state.haltedBy = "objective";
-        bus.emit("objective.reached", {
-          via: item.technique,
-          steps: state.steps,
-          costUsd: state.costUsd,
-        });
+        confirmed.push({ title: finding.title, severity: finding.severity });
+
+        // Publish discovered artifacts to the world-model so later steps use them.
+        if (result.discovered) context.artifacts.push(...result.discovered);
+
+        // Seed follow-ups at the FRONT so the chain is pursued depth-first,
+        // before the loop drains unrelated probes. Skip a seed already
+        // attempted (cycle guard).
+        const seeds = (result.next ?? []).filter(
+          (s) => !context.visited.has(`${s.technique}|${s.url ?? item.url}`),
+        );
+        if (seeds.length > 0) {
+          for (const seed of [...seeds].reverse()) {
+            queue.unshift({
+              technique: seed.technique,
+              url: seed.url ?? item.url,
+              tier: item.tier,
+              retries: 0,
+              cve: seed.cve,
+              parentId: finding.id,
+              step: item.step + 1,
+            });
+          }
+          bus.emit("chain.step", {
+            step: item.step,
+            via: item.technique,
+            produced: finding.produced?.join(", "),
+            consumed: finding.consumed,
+            note: result.note,
+          });
+        }
+
+        // A finding is NOT automatically the objective. Only an attempt that
+        // demonstrably reached the goal ends the run.
+        if (result.reachesObjective) {
+          if (item.step > 1 || result.consumed) {
+            bus.emit("chain.step", {
+              step: item.step,
+              via: item.technique,
+              consumed: finding.consumed,
+              note: result.note,
+            });
+          }
+          state.objectiveReached = true;
+          state.haltedBy = "objective";
+          bus.emit("objective.reached", {
+            via: item.technique,
+            steps: state.steps,
+            costUsd: state.costUsd,
+          });
+        } else {
+          bus.emit("exploit.interpret", { decision: "pivot", note: "confirmed; continuing" });
+        }
         continue;
       }
 
@@ -232,7 +345,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
 function buildDeps(
   scope: ScopeFile,
   gate: ScopeGate,
-  _gateway: Gateway,
+  gateway: Gateway,
   override?: Partial<LoopDeps>,
 ): LoopDeps {
   const boundary = scope.credentials[0]?.boundary ?? "";
@@ -246,6 +359,7 @@ function buildDeps(
     hypothesize: override?.hypothesize ?? ((fp) => groundedLookup(fp.component, fp.version)),
     attempt: override?.attempt ?? attempt,
     escalate: override?.escalate ?? (async () => new BrowserSession(scope, gate, boundary)),
+    plan: override?.plan ?? makeGatewayPlanner(gateway),
     record: override?.record ?? ((f) => store.record(f)),
     budgetUsd: override?.budgetUsd ?? scope.budgetUsd,
     maxRetries: override?.maxRetries ?? 2,

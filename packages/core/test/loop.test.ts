@@ -32,6 +32,7 @@ function baseDeps(over: Partial<LoopDeps>): Partial<LoopDeps> {
     recon: async () => ({ fingerprints: [], endpoints: [] }),
     hypothesize: async () => [],
     escalate: async () => undefined,
+    plan: async () => undefined,
     record: () => {},
     maxRetries: 2,
     ...over,
@@ -58,7 +59,7 @@ describe("runLoop — the decide/recover loop", () => {
           call++;
           return call === 1
             ? { ok: false, note: "flaky", transient: true, applicable: true }
-            : { ok: true, note: "admin reached", applicable: true };
+            : { ok: true, reachesObjective: true, note: "admin reached", applicable: true };
         },
         record: (f) => findings.push(f),
       }),
@@ -159,7 +160,12 @@ describe("runLoop — the decide/recover loop", () => {
       gate,
       gateway,
       baseDeps({
-        attempt: async () => ({ ok: true, note: "admin reached", applicable: true }),
+        attempt: async () => ({
+          ok: true,
+          reachesObjective: true,
+          note: "admin reached",
+          applicable: true,
+        }),
       }),
     );
     expect(reached.haltedBy).toBe("objective");

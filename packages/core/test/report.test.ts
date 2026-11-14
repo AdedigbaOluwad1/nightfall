@@ -78,4 +78,37 @@ describe("toMarkdown — a report a consultant would sign", () => {
     expect(md).toContain("No findings confirmed.");
     expect(md).toContain("without confirming an in-scope vulnerability");
   });
+
+  it("renders linked findings as an ordered attack chain", () => {
+    const step1: Finding = {
+      id: "s1",
+      title: "SQL Injection — Authentication Bypass at http://x/",
+      technique: "SQL Injection — authentication bypass",
+      severity: "critical",
+      cvss: "",
+      evidence: [{ request: "POST /login", response: "token", note: "" }],
+      remediation: "",
+      step: 1,
+      produced: ["admin session JWT"],
+    };
+    const step2: Finding = {
+      id: "s2",
+      title: "Broken Access Control — Privilege Escalation at http://x/",
+      technique: "Authenticated admin access",
+      severity: "high",
+      cvss: "",
+      evidence: [{ request: "GET /api/Users", response: "users", note: "" }],
+      remediation: "",
+      step: 2,
+      parentId: "s1",
+      consumed: "admin session JWT",
+      produced: ["admin-only user records"],
+    };
+    const md = toMarkdown([step2, step1], { target: "x" });
+    expect(md).toContain("## Attack chain");
+    // Ordered by step regardless of input order.
+    expect(md.indexOf("1. **SQL Injection")).toBeLessThan(md.indexOf("2. **Broken Access"));
+    expect(md).toContain("uses the **admin session JWT**");
+    expect(md).toContain("← objective reached.");
+  });
 });
