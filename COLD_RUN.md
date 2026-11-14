@@ -292,3 +292,69 @@ query invalid; unions now select `__typename`, which is valid on any composite t
 The remaining named gap is **JSON/body injection on state-changing verbs** (POST/PUT/
 DELETE, and GraphQL mutations) — held outside the read-only line until a reviewed
 body-injection increment, per [LIMITATIONS.md](./LIMITATIONS.md) §3.
+
+## The "honest zeros" that weren't — a silent login failure
+
+The multi-lab table above records **bWAPP** and **WebGoat** as "0 findings, clean
+halt," filed next to DVNA's honest 0 as evidence the agent degrades gracefully. That
+reading was wrong, and catching it is the single most important result in this file.
+
+> **Intervention point.** Three login-gated labs in a row reported a clean zero. The
+> comfortable story is "they're gated, honest miss" — the same honest-zero we'd just
+> earned on DVNA. But a zero from a correct probe and a zero from a capability that
+> silently never ran are **indistinguishable in the findings count**, and if a
+> judge's target sits behind a login, the second kind loses the entire result while
+> looking fine. We stopped counting and tested the login itself.
+
+**Root cause — three faults stacked into one silent lie.** Against DVWA, login
+genuinely failed yet reported success. `parseLoginForm` captured the hidden
+`user_token`, the username, and the password, but **dropped the submit button** —
+and DVWA authenticates only when `$_POST['Login']` is set, so every login POST was
+silently rejected. `login()` then set `loggedIn = true` **without reading the
+response**, and `agent.ts` wrapped the call in `.catch(() => undefined)`. We proved
+it in isolation: the same POST **without** the Login button returned 200 and stayed
+denied; **with** it, 302 to an authenticated page. The agent had been probing every
+gated lab logged out while reporting a healthy session.
+
+**The fix (shipped).** `parseLoginForm` now carries the submit control verbatim —
+both `<input type=submit name=…>` and `<button type=submit name=…>`. `login()`
+reads the post-login response and **verifies** it (failure = bounced back to the
+login URL, or the password field still present in the body), emits
+`session.login{ok}`, and **throws** on failure instead of swallowing it. The CLI
+renders a green `authenticated` or a red `LOGIN FAILED — probing continues
+UNAUTHENTICATED`. The Tier-2 browser session got the same verification. A new
+`session-login.test.ts` locks the CSRF-token carry, the required submit button, and
+both the success and failure verdicts.
+
+**A second fault the first one hid — incomplete form posts.** With login fixed, DVWA
+still found nothing, because injecting one field in isolation isn't how its sinks
+fire: the SQLi runs only when `?Submit=Submit` rides along (`id='` alone confirmed
+nothing; `id='` **with** `Submit` confirmed it). Recon now captures the form's full
+control set with defaults (`formData`), and an injection **resubmits the complete
+form** with a single payload override — exercising the sink as a browser would.
+
+**Result — the zeros were the bug, not the target.** Credentialed, on the cloud
+backend, no code tuned to either app:
+
+| Lab   | Login shape                                | Before     | After (credentialed)                       |
+| ----- | ------------------------------------------ | ---------- | ------------------------------------------ |
+| DVWA  | hidden `user_token` + `<input name=Login>` | 0 (silent) | **12** — 9× SQLi, 2× XSS, 1× cmdi          |
+| bWAPP | `<button name=form value=submit>`          | 0 (silent) | **6** SQLi across 6 distinct authed routes |
+
+Two independent login shapes, both silent zeros before, both authenticating and
+landing findings now — bWAPP's six on pages only reachable with a live session
+(`portal`, `password_change`, `user_extra`, `security_level_set`, `reset`). This is
+the **fourth** real bug a skeptical re-read of a number exposed, and the costliest
+had it shipped: not a crash, not a false positive, but a false _negative dressed as
+a clean result_ — the one failure mode an honest zero is supposed to rule out.
+
+**Operator setup (provisioning, not source-reading):** DVWA — run `setup.php` to
+create the DB, log in `admin`/`password`, security level defaults to low; bWAPP —
+install via `/install.php?install=yes`, log in `bee`/`bug`. Same credentialed
+black-box category as every setup above.
+
+> **Still not run: WebGoat.** It stays at 0 in the table above, and we are **not**
+> claiming that as honest yet — WebGoat is a lesson-based Spring app with interactive,
+> stateful auth, a genuinely hard target for a flat black-box crawler and a different
+> problem from the login-shape bug just fixed. Named here, not quietly counted as a
+> graceful miss.

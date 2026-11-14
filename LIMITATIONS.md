@@ -148,6 +148,33 @@ These were on this list; we fixed them rather than excuse them.
   (bounded to 512 KB); the evidence snippet shown in a finding stays bounded at
   2 KB. On the labs this turned a 0-finding Mutillidae run into 12 real findings
   with no code tuned to the target (`actions.ts` `rawSend`, `DETECT_MAX`).
+- **Silent login failure → verified authentication.** The credentialed path
+  claimed success it never achieved: `parseLoginForm` captured the hidden, user, and
+  password fields but **dropped the submit control**, so an app that gates on the
+  button (`isset($_POST['Login'])`) never processed the post; `login()` then set
+  `loggedIn = true` unconditionally; and the agent swallowed the whole thing with a
+  `.catch(() => undefined)`. The result was the worst failure shape there is — a
+  broken capability reported as an honest zero (a login-gated target would show a
+  clean 0 findings and look fine). Fixed: `parseLoginForm` now carries the submit
+  `<input>` **and** `<button type=submit name=…>` verbatim; `login()` reads the
+  response and **verifies** it (failure = bounced back to the login URL or the
+  password field still present), emits `session.login{ok}`, and throws on failure;
+  the CLI renders a green `authenticated` or a red `LOGIN FAILED — probing continues
+  UNAUTHENTICATED`, so a broken login can never again masquerade as a clean run. The
+  Tier-2 browser session got the same verification. Proven on two independent login
+  shapes that were both silent zeros before — DVWA (hidden `user_token` + a named
+  submit input) and bWAPP (a `<button name=form value=submit>`), each now
+  authenticating and landing findings (`httpSession.ts`, `browserSession.ts`,
+  `agent.ts`, `render.ts`).
+- **Isolated-field injection → complete-form resubmission.** The injection battery
+  sent only the one field it was testing, so an app gating on a sibling control saw
+  an incomplete post and did nothing (DVWA's SQLi runs only with `?Submit=Submit`
+  present; `id='` alone confirmed nothing, `id='` **plus** `Submit` confirmed the
+  flaw). Recon now captures the form's full control set with default values
+  (`formData`), and an injection **resubmits the complete form** with the single
+  payload override — so a probe exercises the sink exactly as a browser would. This
+  is what took credentialed DVWA from 0 to 12 findings (`recon`, `actions.ts`,
+  `agent.ts`).
 
 ## What our testing still can't substitute for
 
