@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { bus } from "../src/events/bus.js";
 import type { Finding } from "../src/evidence/models.js";
 import type { Gateway } from "../src/gateway/bifrostClient.js";
-import { type LoopDeps, runLoop } from "../src/loop/agent.js";
+import { type LoopDeps, runLoop, scopeId } from "../src/loop/agent.js";
 import { ScopeGate } from "../src/scope/gate.js";
 import { ScopeFile } from "../src/scope/schema.js";
 import type { Session, SessionResponse } from "../src/session/index.js";
@@ -207,6 +207,27 @@ describe("runLoop — the decide/recover loop", () => {
     // The disclosed framework was grounded live, mid-run — not only at recon.
     expect(grounded).toContainEqual({ component: "Express", version: "4.22.1" });
     expect(regroundEvents[0]).toContain("Express");
+  });
+
+  it("stamps every finding with a timestamp and the authorizing scope hash", async () => {
+    const findings: Finding[] = [];
+    await runLoop(
+      scope,
+      gate,
+      gateway,
+      baseDeps({
+        attempt: async () => ({
+          ok: true,
+          reachesObjective: true,
+          note: "admin reached",
+          applicable: true,
+        }),
+        record: (f) => findings.push(f),
+      }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.scopeId).toBe(scopeId(scope));
+    expect(findings[0]?.foundAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("records the halt reason on a clean objective reach and an exhausted queue", async () => {

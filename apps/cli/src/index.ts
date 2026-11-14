@@ -18,6 +18,7 @@ import {
   runLoop,
   ScopeGate,
   type StepType,
+  scopeId,
   setHypothesisGateway,
   toMarkdown,
   ungroundedLookup,
@@ -71,6 +72,7 @@ program
       target: scope.target,
       objective: scope.objective,
       runId: state.runId,
+      scopeId: scopeId(scope),
       haltedBy: state.haltedBy,
       costUsd: state.costUsd,
     });
@@ -124,6 +126,7 @@ program
       target: scope.target,
       objective: scope.objective,
       runId: state.runId,
+      scopeId: scopeId(scope),
       haltedBy: state.haltedBy,
       costUsd: state.costUsd,
     });
@@ -198,7 +201,11 @@ program
   .option("--out <path>", "write the report (default: print to stdout)")
   .action((opts) => {
     const findings = readFindings(fromCwd(opts.in));
-    const md = toMarkdown(findings, { target: opts.target, objective: opts.objective });
+    const md = toMarkdown(findings, {
+      target: opts.target,
+      objective: opts.objective,
+      scopeId: findings.find((f) => f.scopeId)?.scopeId,
+    });
     if (opts.out) {
       const out = fromCwd(opts.out);
       writeFileSync(out, md);

@@ -10,6 +10,11 @@ export const Evidence = z.object({
 export const Finding = z.object({
   id: z.string(),
   title: z.string(),
+  /** ISO timestamp the finding was recorded — chain-of-custody. */
+  foundAt: z.string().default(""),
+  /** Content hash of the authorizing scope file — binds a finding to the
+   *  specific authorization that governed the request that produced it. */
+  scopeId: z.string().default(""),
   /** The originating technique — the stable attribution key for precision@k. */
   technique: z.string().default(""),
   severity: Severity,

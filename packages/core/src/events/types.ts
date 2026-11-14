@@ -10,7 +10,7 @@ export type HaltReason = "objective" | "budget" | "steps" | "exhausted";
 
 /** One typed event per interesting thing that happens during a run. */
 export interface NightfallEvents {
-  "run.start": { runId: string; target: string; objective: string };
+  "run.start": { runId: string; target: string; objective: string; scopeId: string };
   "scope.loaded": { hosts: number; paths: number };
   "scope.blocked": { url: string; reason: string };
   "recon.found": { endpoint: string; component?: string; version?: string };
