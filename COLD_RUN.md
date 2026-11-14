@@ -241,3 +241,42 @@ follow-on: the command-injection probe prefixes a routable host
 (`127.0.0.1; id`) so a host-expecting sink (`nslookup`/`ping`) returns promptly
 instead of blocking on an empty argument until the probe times out, and it now tries
 both `;` and `|` separators.
+
+## API surface — REST discovery, and the GraphQL frontier
+
+Every target so far is an HTML app. Modern targets are APIs, and our whole pipeline
+was HTML-centric: recon crawls `<a>`/`<form>`, so a JSON API — which serves none —
+was invisible. We pointed the agent at **VAmPI** (Python/Flask JSON REST API) to see
+it fail honestly: recon found **0 endpoints**. Not a hardened target, a blind spot.
+
+**The gap, concretely.** A REST API's surface isn't in its HTML, it's in its
+machine-readable contract. VAmPI serves a full **OpenAPI 3** spec at `/openapi.json`
+enumerating every route, method, and parameter — including the path parameters
+(`/users/v1/{username}`) where its SQL injection lives.
+
+**The increment (shipped, reviewed, read-only).** Recon now fetches an OpenAPI/
+Swagger spec from the conventional locations (all gate-checked) and enumerates its
+**GET** operations with their path and query parameters; the injection battery
+injects into a path template by substituting the payload into that segment. GET
+only — a GET carries read semantics, and state-changing bodies (POST/PUT/DELETE
+JSON) stay outside the read-only line until a reviewed body-injection increment.
+**Result:** against VAmPI, recon went from 0 endpoints to the two path-param routes,
+and the existing error-based check confirmed **one real critical SQL injection on
+`/users/v1/{username}`** (`sqlite3.OperationalError` on a quote probe) — no code
+tuned to VAmPI.
+
+> **Intervention point — a regression caught by re-reading the numbers.** Teaching
+> the probe to use spec-declared fields first made a GET endpoint probe _only_ its
+> form field, which silently masked the injectable `?page=` router parameter —
+> Mutillidae's LFI vector. The re-run dropped from 12 findings to 10. We didn't
+> wave it through as noise: a GET can carry both an injectable form field and an
+> injectable query param, so the probe now takes the **union** of the two. Mutillidae
+> is back to 12 (9 SQLi, 2 XSS, 1 LFI) and VAmPI holds at 1 — the same re-read-the-
+> result discipline that found the three bugs above, applied to our own change.
+
+**The next frontier, named not claimed.** We also stood up **DVGA** (Damn Vulnerable
+GraphQL App). GraphQL exposes a single POST `/graphql` endpoint enumerated by
+_introspection_, not OpenAPI — so our spec crawl finds nothing (**0 endpoints**,
+confirmed). GraphQL injection (introspect the schema, probe query-argument sinks) is
+the next deliberate, read-only increment, listed in
+[LIMITATIONS.md](./LIMITATIONS.md) §3 rather than quietly claimed.

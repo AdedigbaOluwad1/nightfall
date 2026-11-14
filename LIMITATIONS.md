@@ -78,6 +78,21 @@ does not depend on the lab being disposable. Two such additions:
   looks. Validated across intentionally-vulnerable labs spanning stacks (Mutillidae
   PHP, BodgeIt Java/JSP, DVNA Node): the same probes confirm real SQLi, XSS, and
   LFI on each without per-lab tuning.
+- **REST API surface via OpenAPI.** A JSON/REST API publishes no crawlable HTML,
+  so the HTML crawl saw nothing. Recon now reads a served OpenAPI/Swagger contract
+  to enumerate GET endpoints and their path/query parameters, and the SQLi/XSS/
+  traversal/cmdi battery probes those inputs (path-template parameters included) —
+  still read-only (GET only; state-changing bodies are the next increment, below).
+  Validated against VAmPI (Python/Flask JSON API): 0 discovered endpoints → the two
+  path-param routes → a real critical SQL injection on `/users/v1/{username}`.
+
+**Still outside the set (named, not hidden).** Two API shapes are _not_ yet
+probed, both deliberate next increments rather than claims: **(a) GraphQL** — a
+single POST `/graphql` endpoint enumerated by introspection, not OpenAPI, so our
+spec crawl finds nothing (confirmed against DVGA: 0 endpoints). **(b) JSON/body
+injection on POST/PUT/DELETE** — these are state-changing, so the read-only line
+holds until a reviewed body-injection increment lands. Each is additive to the
+same closed `switch`, not a flag flip.
 
 ## 4. Broken access control is not confirmed on an authenticated run
 
