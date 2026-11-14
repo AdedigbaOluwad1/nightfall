@@ -46,6 +46,14 @@ export interface AttemptOpts {
   objectiveHint?: string[];
   /** The run's world-model — artifacts earlier steps discovered. */
   context?: AttackContext;
+  /** An unauthenticated baseline session, for the two-principal broken-access-
+   *  control differential: the same gated surface, requested with no credentials,
+   *  must be denied for a reached surface to count as a boundary cross. */
+  baseline?: Session;
+  /** A higher-privilege principal, for the broken-access-control differential:
+   *  when it also serves the surface, the surface is confirmed shared privileged
+   *  functionality rather than the primary principal's own per-user resource. */
+  elevated?: Session;
 }
 
 /**
@@ -1000,6 +1008,87 @@ async function probeObjective(
 }
 
 /**
+ * Two-principal broken-access-control differential (OWASP A01, function-level
+ * authorization). The primary `session` is the principal under test — the lower-
+ * privilege account, listed first in scope. A finding requires, in order:
+ *
+ *   1. the primary principal reaches the surface with the objective signal;
+ *   2. the surface is privilege-denoting (admin/management/config) — not a public
+ *      or per-user feature page;
+ *   3. an anonymous request to the same surface is DENIED (an auth wall), proving
+ *      the surface is access-controlled, so reaching it is a real boundary cross;
+ *   4. when an elevated principal is supplied, it ALSO reaches the surface,
+ *      confirming shared administrative functionality rather than a resource that
+ *      is simply the primary principal's own.
+ *
+ * Each gate independently rejects a false-positive class the removed single-
+ * principal keyword match could not: public pages (step 3 — the anon request
+ * reaches them), authorized admin use (the primary principal is non-admin by
+ * scope, enforced by the caller), and per-user resources (step 4). A failed login
+ * collapses the primary into an anonymous principal, in which case step 1 or 3
+ * fails and nothing is flagged — so the differential cannot manufacture a finding
+ * from a broken login either. Every request is a read-only GET.
+ */
+async function accessControlDifferential(
+  session: Session,
+  technique: string,
+  opts: AttemptOpts,
+): Promise<AttemptResult> {
+  const hint = opts.objectiveHint ?? [];
+  const url = opts.url;
+
+  const direct = await probeObjective(session, technique, url, hint);
+  if (!direct.ok) return direct;
+
+  const carry = {
+    applicable: true as const,
+    status: direct.status,
+    ...(direct.evidence ? { evidence: direct.evidence } : {}),
+  };
+
+  if (!isPrivilegedSurface(url)) {
+    return {
+      ok: false,
+      ...carry,
+      note: `${technique}: reachable (${direct.status ?? 200}) but not a privilege-denoting surface — authorized access is not broken access control`,
+    };
+  }
+
+  const anon = opts.baseline ? await rawSend(opts.baseline, { url }) : undefined;
+  const anonDenied =
+    anon?.kind === "ok" && (isAuthWall(anon.res.status, anon.scan) || anon.res.status >= 400);
+  if (!anonDenied) {
+    return {
+      ok: false,
+      ...carry,
+      note: `${technique}: the same surface is reachable anonymously — public, not broken access control`,
+    };
+  }
+
+  if (opts.elevated) {
+    const elevated = await probeObjective(opts.elevated, technique, url, hint);
+    if (!elevated.ok) {
+      return {
+        ok: false,
+        ...carry,
+        note: `${technique}: the elevated principal does not serve this surface — cannot confirm shared privileged functionality, under-claiming`,
+      };
+    }
+  }
+
+  const basis = opts.elevated
+    ? "Impact-confirmed: a lower-privilege authenticated principal reached an administrative surface that an anonymous request is denied and that the elevated principal also serves — a proven function-level authorization gap (vertical privilege escalation). The probe only reads the surface; it changes no state."
+    : "Signal-based: a lower-privilege authenticated principal reached an administrative surface that an anonymous request is denied. Add an elevated principal to the scope to confirm shared privileged functionality end to end.";
+
+  return {
+    ok: true,
+    ...carry,
+    note: `${technique}: lower-privilege principal reached privilege-denoting surface ${url} that anonymous access is denied — broken function-level authorization`,
+    basis,
+  };
+}
+
+/**
  * Broken access control / baseline probe (also the fallback for unrecognized
  * techniques): a plain GET of a gated surface. Confirms when a reachable page
  * matches the objective tokens — e.g. an admin surface served without the
@@ -1024,6 +1113,12 @@ async function accessControlCheck(
   // authenticated feature page. (Unauthenticated BAC confirmation is unaffected:
   // reaching a gated surface with no session remains a finding.)
   if (opts.authenticated) {
+    // With a baseline to diff against, a lower-privilege principal reaching a
+    // gated administrative surface is a provable broken-access-control finding
+    // (two-principal differential below). Without one, a single authenticated
+    // session reaching a resource is expected, not a boundary violation, so we
+    // under-claim rather than flag an authorized feature page.
+    if (opts.baseline) return accessControlDifferential(session, technique, opts);
     return {
       ok: false,
       applicable: true,

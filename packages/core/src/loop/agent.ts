@@ -54,6 +54,11 @@ export interface LoopDeps {
   attempt: (session: Session, technique: string, opts: AttemptOpts) => Promise<AttemptResult>;
   /** Build a higher-capability (Tier-2) session on demand; undefined = none. */
   escalate?: () => Promise<Session | undefined>;
+  /** Build a peer Tier-1 session for the broken-access-control differential: a
+   *  given boundary's credentials, or `null` for an unauthenticated baseline.
+   *  Undefined disables the differential (tests that inject no peer keep the
+   *  single-principal behavior). */
+  peerSession?: (boundary: string | null) => Session;
   /** Model-driven next-action selector; undefined = pure deterministic order. */
   plan?: Planner;
   record: (finding: Finding) => void;
@@ -137,6 +142,28 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   // surface, but the failure is on the event stream — never swallowed into a "0
   // findings" that looks like an honest clean scan. The failure mode we must not hide.
   await primary.login().catch(() => undefined);
+
+  // Two-principal broken-access-control differential. The principal under test is
+  // the first credential (list the lower-privilege account first); a later
+  // credential marked role:"admin" is the elevated principal. We diff a gated
+  // administrative surface the low principal reaches against an anonymous baseline
+  // (always) and the elevated principal (when supplied). Skipped when the primary
+  // principal is itself admin (no vertical escalation to find) or on an
+  // unauthenticated run (no principal under test).
+  const primaryCred = scope.credentials[0];
+  const runDifferential = !!primaryCred && primaryCred.role !== "admin";
+  let anonBaseline: Session | undefined;
+  let elevated: Session | undefined;
+  if (runDifferential && deps.peerSession) {
+    anonBaseline = deps.peerSession(null);
+    const adminCred = scope.credentials.find((c, i) => i > 0 && c.role === "admin");
+    if (adminCred) {
+      elevated = deps.peerSession(adminCred.boundary);
+      await elevated.login().catch(() => {
+        elevated = undefined;
+      });
+    }
+  }
 
   let budgetAnnounced = false;
   const announceBudget = (stage: "hypothesis" | "attempt"): void => {
@@ -325,6 +352,8 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           authenticated: scope.credentials.length > 0,
           objectiveHint: hint,
           context,
+          baseline: anonBaseline,
+          elevated,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -479,6 +508,8 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
     if (!state.haltedBy) state.haltedBy = "exhausted";
   } finally {
     await tier2?.dispose().catch(() => undefined);
+    await anonBaseline?.dispose().catch(() => undefined);
+    await elevated?.dispose().catch(() => undefined);
   }
 }
 
@@ -499,6 +530,8 @@ function buildDeps(
     hypothesize: override?.hypothesize ?? ((fp) => groundedLookup(fp.component, fp.version)),
     attempt: override?.attempt ?? attempt,
     escalate: override?.escalate ?? (async () => new BrowserSession(scope, gate, boundary)),
+    peerSession:
+      override?.peerSession ?? ((b) => new HttpSession(scope, gate, b ?? "__nf_anon_baseline__")),
     plan: override?.plan ?? makeGatewayPlanner(gateway),
     record: override?.record ?? ((f) => store.record(f)),
     budgetUsd: override?.budgetUsd ?? scope.budgetUsd,
