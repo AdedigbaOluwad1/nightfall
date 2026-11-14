@@ -50,13 +50,19 @@ UNAUTHENTICATED`, so a broken login is never silently reported as an honest clea
 # add to your scope file (array — one entry per auth boundary)
 credentials:
   - boundary: user # a logical auth-boundary label; does NOT widen scope
-    loginUrl: "http://localhost:8095/login.php"
+    loginUrl: "http://localhost:8081/login.php"
     username: "admin"
     password: "password"
 ```
 
+A ready-to-run example ships at
+[`packages/core/src/scope/example.auth.scope.yaml`](./packages/core/src/scope/example.auth.scope.yaml)
+(credentialed DVWA):
+
 ```bash
-pnpm --filter @nightfall/cli dev -- --scope my-authed.scope.yaml
+docker compose -f labs/docker-compose.yml up -d dvwa
+# one-time: open http://localhost:8081/setup.php and click "Create / Reset Database"
+pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.auth.scope.yaml
 ```
 
 Credentials authenticate an authorized test; they never relax the deny-by-default gate.

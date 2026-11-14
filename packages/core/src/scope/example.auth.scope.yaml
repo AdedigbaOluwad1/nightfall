@@ -1,0 +1,14 @@
+target: "http://localhost:8081/index.php"
+objective: "Find and confirm an injection or XSS flaw behind the login and extract or reflect data"
+allow:
+  hosts: ["localhost"]
+  paths: ["/"]
+deny:
+  paths: ["/logout.php", "/setup.php"]
+budgetUsd: 5
+maxSteps: 40
+credentials:
+  - boundary: "user"
+    loginUrl: "http://localhost:8081/login.php"
+    username: "admin"
+    password: "password"
