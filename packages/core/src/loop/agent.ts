@@ -88,8 +88,11 @@ function toFinding(item: WorkItem, result: AttemptResult, scopeId: string): Find
     scopeId,
     technique: item.technique,
     severity: profile.severity,
+    cwe: profile.cwe,
+    cve: item.cve ?? "",
     cvss: profile.cvss,
     cvssScore: profile.cvssScore,
+    basis: profile.basis,
     evidence: result.evidence
       ? [{ ...result.evidence, note: result.evidence.note ?? result.note }]
       : [{ request: `GET ${item.url}`, response: "", note: result.note }],
