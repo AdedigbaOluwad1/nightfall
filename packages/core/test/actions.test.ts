@@ -624,6 +624,42 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
     expect(miss.ok).toBe(false);
   });
 
+  it("trips no sibling detector on a vulnerability-vocabulary lesson menu (XSS/cmdi/traversal FP audit)", async () => {
+    // The same audit the SQL case got, applied to its siblings: a teaching app
+    // (WebGoat/bWAPP/DVWA style) whose chrome names every vulnerability class and
+    // sprinkles adjacent danger words ("root", "uid", "syntax", "passwd"), served
+    // byte-identically for every request. None of these detectors match a topic
+    // word — XSS keys on a reflected nonce marker, cmdi on real shell output,
+    // traversal on real host-file contents — so a page that is pure vocabulary and
+    // reacts to no payload must confirm nothing.
+    const lessonMenu =
+      "<nav><ul>" +
+      "<li>SQL Injection</li><li>Blind SQL Injection</li>" +
+      "<li>Cross-Site Scripting (XSS)</li><li>Reflected XSS</li><li>Stored XSS</li>" +
+      "<li>OS Command Injection</li><li>Command Injection</li>" +
+      "<li>Path Traversal</li><li>Directory Traversal</li><li>Local File Inclusion (LFI)</li>" +
+      "<li>Cross-Site Request Forgery (CSRF)</li>" +
+      "</ul></nav>" +
+      "<p>root access · admin panel · user accounts · syntax · passwd · uid · daemon</p>";
+    const teaching = new StubSession(() => ({
+      headers: { "content-type": "text/html" },
+      body: lessonMenu,
+    }));
+    for (const technique of [
+      "Reflected Cross-Site Scripting",
+      "OS Command Injection",
+      "Path Traversal",
+      "Local File Inclusion",
+    ]) {
+      const miss = await attempt(
+        teaching,
+        technique,
+        opts({ url: "http://localhost:9/lesson?name=x", method: "GET", fields: ["name"] }),
+      );
+      expect(miss.ok, `${technique} must not confirm on vocabulary chrome`).toBe(false);
+    }
+  });
+
   it("rejects a DB-error string that is also present without the payload", async () => {
     // The endpoint returns a real DB-error signature on EVERY request, not in
     // reaction to the quote — so it is app content, not an injection. The control

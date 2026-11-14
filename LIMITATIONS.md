@@ -23,12 +23,17 @@ resolves DNS itself at connect time — the gate does not pin the IP it validate
 **What a fix takes.** Resolve once, validate the resolved IP, and pin it for the
 connection (custom lookup / agent).
 
-**The tradeoff.** For the mandated scope this is **already closed**: the lab is
-loopback-only (`allow.hosts: [localhost]`), and an unlisted host or a bare IP
-literal is refused by deny-by-default — so the dangerous rebind (to a metadata or
-private IP) can't be reached at all. The only residual is a _listed_ hostname's own
-DNS flipping, i.e. the operator rebinding their own isolated lab against themselves.
-Named, not dressed up as resolved.
+**The tradeoff.** The _dangerous_ rebind is unreachable **for any scope**, not just
+a loopback one: deny-by-default refuses an unlisted host and a bare IP literal, so a
+hostname cannot flip to a metadata or private-range address the gate never
+authorized — the classic SSRF-rebind target is blocked regardless of what the judged
+lab turns out to be. The only residual is a _listed_ hostname's own DNS flipping
+between check and connect — the operator rebinding their own authorized lab against
+itself — which is a self-inflicted edge, not an escalation. Our own example scope is
+loopback (`allow.hosts: [localhost]`), which removes even that residual; we do not
+assume the judged target is loopback, because the property above does not depend on
+it. Fully closing the residual is the IP-pin fix named above. Named, not dressed up
+as resolved.
 
 ## 2. Several finding classes are signal-based, not impact-confirmed
 
