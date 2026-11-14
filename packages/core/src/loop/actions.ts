@@ -677,8 +677,6 @@ async function sqlInjectionCheck(
   if (isMutatingSurface(opts)) return mutatingSkip(technique);
   let last: AttemptResult | undefined;
 
-  // Try each candidate input in turn; confirm on the first that injects. The
-  // error-based and boolean-based oracles run per field.
   for (const field of candidateFields(opts)) {
     // 1) Error-based: an unmatched quote-pair should trip a DB parse error that
     //    leaks the engine (and often a framework banner).

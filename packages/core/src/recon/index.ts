@@ -123,7 +123,6 @@ export async function recon(
     for (const fp of parseFingerprints(res)) fingerprints.push(fp);
     bus.emit("recon.found", { endpoint: url });
 
-    // Follow links and record forms as attackable endpoints.
     if (/html/i.test(res.headers["content-type"] ?? "") || /<html/i.test(res.body)) {
       const $ = cheerio.load(res.body);
       $("a[href]").each((_, el) => enqueue($(el).attr("href") ?? ""));
