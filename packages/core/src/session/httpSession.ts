@@ -10,6 +10,9 @@ import type { Session, SessionRequest, SessionResponse } from "./index.js";
 const USER_FIELDS = ["username", "user", "email", "login", "user_name", "name"];
 const PASS_FIELDS = ["password", "pass", "passwd", "pwd"];
 
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+
 /** Tier 1: cookie-aware fetch. Logs in once per boundary, carries the jar. */
 export class HttpSession implements Session {
   readonly tier = 1 as const;
@@ -23,14 +26,37 @@ export class HttpSession implements Session {
     private readonly boundary: string,
   ) {}
 
-  /** Route every outbound call through the gate — fail closed on a block. */
+  /**
+   * Route every outbound call through the gate — fail closed on a block. Redirects
+   * are followed manually so each hop is re-checked: an in-scope URL that redirects
+   * out of scope must not slip past (fetch's default auto-follow would). Honours the
+   * method downgrade browsers apply (303, and POST on 301/302 → GET).
+   */
   private async fetchGated(url: string, init?: RequestInit): Promise<Response> {
-    const decision = this.gate.check(url);
-    if (!decision.allowed) {
-      bus.emit("scope.blocked", { url, reason: decision.reason });
-      throw new Error(`blocked by scope gate: ${decision.reason}`);
+    let currentUrl = url;
+    let currentInit: RequestInit = { ...init, redirect: "manual" };
+
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const decision = this.gate.check(currentUrl);
+      if (!decision.allowed) {
+        bus.emit("scope.blocked", { url: currentUrl, reason: decision.reason });
+        throw new Error(`blocked by scope gate: ${decision.reason}`);
+      }
+
+      const res = await this.fetch(currentUrl, currentInit);
+      const location = res.headers.get("location");
+      if (!REDIRECT_STATUS.has(res.status) || !location) return res;
+
+      currentUrl = new URL(location, currentUrl).toString();
+      const method = (currentInit.method ?? "GET").toUpperCase();
+      const downgrade =
+        res.status === 303 || (res.status < 307 && method !== "GET" && method !== "HEAD");
+      if (downgrade) {
+        currentInit = { ...currentInit, method: "GET", body: undefined, redirect: "manual" };
+      }
     }
-    return this.fetch(url, init);
+
+    throw new Error(`too many redirects (>${MAX_REDIRECTS})`);
   }
 
   async login(): Promise<void> {

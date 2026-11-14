@@ -1,20 +1,37 @@
 # Nightfall
 
-Nightfall is an autonomous web-application pentest agent built for the Geek Room
-Global AI Hackathon (Track A / Challenge 03). It runs **only** against authorized,
-isolated targets described by a scope file, behind a deny-by-default scope gate.
+Nightfall is an autonomous **black-box** web-application pentest agent built for the
+Geek Room Global AI Hackathon (**Track A / Challenge 03**, with the Bifrost and Tavily
+integrations). You hand it a scope file — a target URL and an objective, **no
+credentials and no prior knowledge of the stack** — and it fingerprints, hypothesizes,
+exploits, and reports on its own. It runs **only** against authorized, isolated targets
+described by that scope file, behind a deny-by-default scope gate.
 
-> **Start here:** [NIGHTFALL.md](./NIGHTFALL.md) is the project's source of truth —
-> the win thesis, operating persona, full architecture diagram, the agent loop, and
-> how every piece fits. When anything is unclear, that document is the answer.
+> Authenticated testing is supported (an optional `credentials` block in the scope
+> file) but is **off by default** — the judged demo is zero-credential, zero-knowledge.
+
+> **Start here:** [NIGHTFALL.md](./NIGHTFALL.md) is the project overview (what it is,
+> the challenge, and how each requirement is met); [ARCHITECTURE.md](./ARCHITECTURE.md)
+> is the full design — the scope gate, the agent loop, the session tiers, and how
+> Bifrost and Tavily fit in.
 
 ## Quickstart
 
 ```bash
+git clone https://github.com/AdedigbaOluwad1/nightfall.git
+cd nightfall
 pnpm install
 pnpm exec playwright install chromium   # only needed for the Tier-2 browser session
+cp .env.example .env                     # then add your own Bifrost + Tavily keys
+
+# Bring up a practice lab and point the agent at it:
+docker compose -f labs/docker-compose.yml up -d juiceshop
 pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.scope.yaml
 ```
+
+Bring your own API keys: a Bifrost gateway endpoint (`BIFROST_BASE_URL` +
+`BIFROST_API_KEY`) and a `TAVILY_API_KEY`. See `.env.example` for the full list,
+including the `NF_MODEL_*` routing roles.
 
 The default `run` drives the full autonomous loop against a lab (bring one up with
 `docker compose -f labs/docker-compose.yml up -d juiceshop`) and needs model quota.
@@ -46,18 +63,40 @@ The Tavily grounding proof needs model quota:
 pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.json
 ```
 
-Current build status per rubric row is tracked in [`PRE_SUBMISSION.md`](./PRE_SUBMISSION.md).
+## What Bifrost does (and a raw API key can't)
+
+- **Real per-call cost.** Every model call is priced from Bifrost's live `/v1/models`
+  catalog and tagged on the `gateway.call` event — no estimated or faked numbers.
+- **A budget cap that halts a runaway loop.** Spend accumulates against the scope's
+  `budgetUsd`; crossing it raises a typed `BudgetExceededError` the loop catches and
+  halts on (`halted: budget`) — proven live, not a mocked check.
+- **Model-tier routing + cache.** `NF_MODEL_CHEAP`/`STRONG`/`WRITE` route per step
+  through one gateway; the client reads the `x-bifrost-cache-hit` header so a repeated
+  call is served at $0.
+
+## What Tavily does (and the bare model can't)
+
+- **Grounds hypotheses in current advisories.** For each fingerprint, Tavily retrieves
+  live CVE/advisory pages that seed the exploit-technique ranking.
+- **It is load-bearing, measured two ways** (not asserted): grounded-vs-ungrounded
+  **freshness** (WebGoat 2026.5: grounded surfaces 5 post-cutoff CVEs vs 0) and
+  **citation validity** (Log4j: grounded recovers the full Log4Shell chain 4/4 vs 2).
+- **It changes the finding.** On a cold Juice Shop run, grounding on → a confirmed
+  **critical SQLi (CVSS 9.8)**; grounding off → the run falls back to the access-probe
+  and reports only the lower-severity Broken Access Control.
+
+How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL.md).
 
 ## Layout
 
 - `packages/core` — event bus, scope gate, session layer, gateway, evidence, report.
 - `apps/cli` — the streaming trace runner.
-- `apps/web` — deferred projected demo view.
+- `apps/web` — live view (vite + react) over the `serve` WebSocket.
 - `labs` — docker-compose practice targets (Juice Shop, DVWA, WebGoat).
 
 ## Docs
 
-- [NIGHTFALL.md](./NIGHTFALL.md) — source of truth (architecture, persona, plan).
-- [CONTRIBUTING.md](./CONTRIBUTING.md) — branching, PR flow, commit style, CI rules.
+- [NIGHTFALL.md](./NIGHTFALL.md) — project overview and how each requirement is met.
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — full system design.
 - [AUTHORIZATION.md](./AUTHORIZATION.md) — scope policy and safety.
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — architecture overview.
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — branching, PR flow, commit style, CI rules.
