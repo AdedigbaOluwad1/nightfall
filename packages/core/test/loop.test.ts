@@ -41,6 +41,9 @@ function baseDeps(over: Partial<LoopDeps>): Partial<LoopDeps> {
 
 afterEach(() => bus.clearListeners());
 
+/** Drain the async event bus (Emittery dispatches listeners on a later tick). */
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
 describe("runLoop — the decide/recover loop", () => {
   it("recovers from a failed attempt and reaches the objective without a human", async () => {
     const decisions: string[] = [];
@@ -64,6 +67,7 @@ describe("runLoop — the decide/recover loop", () => {
         record: (f) => findings.push(f),
       }),
     );
+    await flush();
 
     expect(decisions).toContain("retry"); // it chose to recover
     expect(state.objectiveReached).toBe(true);
@@ -104,7 +108,7 @@ describe("runLoop — the decide/recover loop", () => {
           endpoints: [],
         }),
         hypothesize: async () => {
-          bus.emit("gateway.call", {
+          await bus.emit("gateway.call", {
             step: "exploit_reason",
             model: "x",
             costUsd: 1,
@@ -147,11 +151,62 @@ describe("runLoop — the decide/recover loop", () => {
         attempt: async () => ({ ok: false, note: "n/a", applicable: false }),
       }),
     );
+    await flush();
 
     expect(failures).toHaveLength(1); // not silently swallowed
     expect(failures[0]?.component).toBe("OWASP Juice Shop");
     expect(failures[0]?.reason).toContain("429");
     expect(state.haltedBy).toBe("exhausted"); // loop still finished cleanly
+  });
+
+  it("re-grounds mid-run: a fingerprint a step discloses is grounded live against advisories", async () => {
+    const regroundEvents: string[] = [];
+    bus.on("chain.step", (e) => {
+      if (e.produced?.startsWith("re-grounded")) regroundEvents.push(e.produced);
+    });
+    const grounded: { component: string; version: string }[] = [];
+    let call = 0;
+
+    await runLoop(
+      scope,
+      gate,
+      gateway,
+      baseDeps({
+        hypothesize: async (fp) => {
+          grounded.push({ component: fp.component, version: fp.version });
+          return [
+            {
+              technique: "Prototype Pollution",
+              cve: "CVE-2024-29041",
+              rationale: "Express < 4.17.3 is affected",
+            },
+          ];
+        },
+        attempt: async () => {
+          call++;
+          return call === 1
+            ? {
+                ok: true,
+                note: "stack disclosed",
+                applicable: true,
+                discovered: [
+                  {
+                    kind: "fingerprint",
+                    value: "Express@4.22.1",
+                    label: "Express 4.22.1",
+                    from: "x",
+                  },
+                ],
+              }
+            : { ok: false, note: "n/a", applicable: false };
+        },
+      }),
+    );
+    await flush();
+
+    // The disclosed framework was grounded live, mid-run — not only at recon.
+    expect(grounded).toContainEqual({ component: "Express", version: "4.22.1" });
+    expect(regroundEvents[0]).toContain("Express");
   });
 
   it("records the halt reason on a clean objective reach and an exhausted queue", async () => {

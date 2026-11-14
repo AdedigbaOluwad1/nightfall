@@ -81,9 +81,13 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.
 - **It is load-bearing, measured two ways** (not asserted): grounded-vs-ungrounded
   **freshness** (WebGoat 2026.5: grounded surfaces 5 post-cutoff CVEs vs 0) and
   **citation validity** (Log4j: grounded recovers the full Log4Shell chain 4/4 vs 2).
-- **It changes the finding.** On a cold Juice Shop run, grounding on → a confirmed
-  **critical SQLi (CVSS 9.8)**; grounding off → the run falls back to the access-probe
-  and reports only the lower-severity Broken Access Control.
+- **It re-grounds mid-run as the surface expands.** On a cold Juice Shop run the
+  agent's first probe forces a DB error that leaks `Express ^4.22.1` — a fingerprint
+  passive recon never saw. Grounding on, it re-queries Tavily _mid-chain_ and the
+  disclosed stack scores **2/2 valid CVE citations, one of them a post-cutoff 2026 CVE**;
+  grounding off, the bare model still cites CVEs but **0/2 are valid** (hallucinated).
+  Both runs reach the objective via the deterministic chain — grounding is what keeps
+  the expanding surface real and current. Measured by `ablate` (active-disclosure row).
 
 How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL.md).
 

@@ -84,11 +84,21 @@ the CLI and web view render.
    `(component, version)`, queries Tavily for current CVEs/advisories, then ranks
    candidate techniques grounded in that fresh data. This is also where the ablation
    measures grounding's effect.
-4. **Exploit + interpret loop** (`loop/agent.ts`, `loop/actions.ts`, `loop/interpret`).
-   Picks a candidate, runs the attempt via the session, reads the response, and decides:
-   `retry` a variant, `escalate`, `abandon` the path, or `pivot`. Technique dispatch is
-   per-class (SQLi, XSS, CSRF, traversal, command injection, broken access control), with
-   an always-on broken-access probe as the floor.
+4. **Exploit + interpret loop** (`loop/agent.ts`, `loop/actions.ts`, `loop/interpret`,
+   `loop/context.ts`, `loop/planner.ts`). Picks a candidate, runs the attempt via the
+   session, reads the response, and decides: `retry` a variant, `escalate`, `abandon` the
+   path, or `pivot`. Technique dispatch is per-class (SQLi, XSS, CSRF, traversal, command
+   injection, broken access control), with an always-on broken-access probe as the floor.
+   The loop carries a **world-model** (`AttackContext`): each step can publish artifacts
+   (a leaked token, a disclosed fingerprint) and seed follow-up steps, so a confirmed
+   finding chains into the next — e.g. SQL-injection auth-bypass → captured admin JWT →
+   authenticated admin access (objective). A finding is kept distinct from the objective;
+   only a step that demonstrably reaches the goal ends the run. A Bifrost-backed
+   **planner** (strong model) reorders the pending queue over the world-model, with
+   front-of-queue as the deterministic floor. The first step is a deterministic **active
+   fingerprint** probe: it provokes the stack to disclose its framework/version, which the
+   loop **re-grounds** against Tavily mid-chain — so the attack surface expands past what
+   passive recon saw before exploitation begins.
 5. **Evidence store** (`evidence/store.ts`). Every request/response pair tied to the
    finding it supports, captured as it happens (append-only JSONL) — the source of truth
    the report reads back.
@@ -106,14 +116,19 @@ The loop is a bounded state machine:
 state = { steps: 0, maxSteps, budget, objectiveReached: false }
 emit run.start
 recon() -> fingerprints            # through the session; gate-checked
-queue   = grounded candidates (per fingerprint, via Tavily) + always-on access probes
+queue   = [active-fingerprint probe] + grounded candidates (per fingerprint, via Tavily)
+          + deterministic chain seed + always-on access probes
 while queue not empty and not objectiveReached and steps < maxSteps and budget not hit:
     gateway.budget.assertUnder()   # budget cap can halt here
-    result   = attempt(candidate)  # via the session; gate-checked
-    decision = interpret(result)   # classify output -> next action
+    candidate = planner.pick(queue, world-model)   # step 1 exempt; front-of-queue floor
+    result    = attempt(candidate, world-model)    # via the session; gate-checked
+    decision  = interpret(result)  # classify output -> next action
     emit exploit.interpret(decision)
     if result.confirms_finding:
         evidence.record(finding); emit finding.confirmed
+        world-model += result.artifacts            # token / fingerprint / endpoint
+        for fp in new fingerprints: re-ground(fp)  # mid-chain Tavily, budget-guarded
+        queue  += result.seeds                     # the chain grows depth-first
         if finding.reaches_objective: objectiveReached = true; break
     match decision:
         retry    -> retry a bounded variant of this candidate
@@ -199,11 +214,12 @@ memory. Grounding's value is **measured, not asserted**, via an ablation that ru
 hypothesis step twice from identical recon input — grounded vs. the Tavily call stubbed —
 holding model, routing, temperature, and seed fixed.
 
-| Metric                 | What it measures                                                                        | Role              |
-| ---------------------- | --------------------------------------------------------------------------------------- | ----------------- |
-| **Citation validity**  | % of ranked candidates whose cited CVE/advisory actually applies to the fingerprint     | Headline          |
-| **Freshness**          | % of grounded candidates citing an advisory published after the model's training cutoff | Headline          |
-| Hypothesis→finding p@3 | % of top-3 candidates that led to a confirmed finding through the real loop             | Supporting, noisy |
+| Metric                 | What it measures                                                                                             | Role              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------- |
+| **Citation validity**  | % of ranked candidates whose cited CVE/advisory actually applies to the fingerprint                          | Headline          |
+| **Freshness**          | % of grounded candidates citing an advisory published after the model's training cutoff                      | Headline          |
+| **Re-grounding**       | for a fingerprint disclosed mid-exploitation (not by recon): valid + fresh citations, grounded vs ungrounded | Headline          |
+| Hypothesis→finding p@3 | % of top-3 candidates that led to a confirmed finding through the real loop                                  | Supporting, noisy |
 
 Effect size varies by lab: old, well-known components (DVWA/WebGoat) move the needle
 less; the win shows on recent advisories. Both raw ranked lists are kept verbatim so the

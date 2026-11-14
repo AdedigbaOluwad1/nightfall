@@ -55,6 +55,31 @@ describe("attempt — technique-aware dispatch", () => {
     expect(miss.applicable).toBe(true);
   });
 
+  it("extracts a leaked framework banner from the SQL error page as a fingerprint artifact", async () => {
+    // Juice Shop's 500 error page is titled "OWASP Juice Shop (Express ^4.22.1)":
+    // the quote probe both confirms SQLi AND discloses the stack to re-ground.
+    const leaky = new StubSession((req) =>
+      req.url.includes("q=%27%22")
+        ? {
+            status: 500,
+            body: "<h1>OWASP Juice Shop (Express ^4.22.1)</h1> SQLITE_ERROR: syntax error",
+          }
+        : { body: "" },
+    );
+    const hit = await attempt(leaky, "SQL Injection", opts());
+    expect(hit.ok).toBe(true);
+    const fp = hit.discovered?.find((a) => a.kind === "fingerprint");
+    expect(fp?.value).toBe("Express@4.22.1");
+
+    // No banner in the error → a clean confirm with no fingerprint discovered.
+    const noBanner = new StubSession((req) =>
+      req.url.includes("q=%27%22") ? { status: 500, body: "SQLITE_ERROR: syntax error" } : {},
+    );
+    const plain = await attempt(noBanner, "SQL Injection", opts());
+    expect(plain.ok).toBe(true);
+    expect(plain.discovered?.some((a) => a.kind === "fingerprint")).toBeFalsy();
+  });
+
   it("confirms reflected XSS only when the marker echoes un-escaped into HTML", async () => {
     const reflecting = new StubSession((req) => {
       const u = new URL(req.url);

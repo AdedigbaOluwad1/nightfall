@@ -6,6 +6,15 @@ export interface FrozenTarget {
   lab: string;
   component: string;
   version: string;
+  /**
+   * Whether passive recon exposed this fingerprint, or an exploitation step had
+   * to provoke the stack to disclose it. An `active` target is the re-grounding
+   * case: the fingerprint is reachable only by attacking, and useful only when
+   * grounded live mid-chain.
+   */
+  disclosure?: "passive" | "active";
+  /** How an active fingerprint was disclosed — for the report narrative. */
+  note?: string;
 }
 
 export interface ConditionScore {
@@ -85,6 +94,55 @@ export async function runAblation(frozen: FrozenTarget[]): Promise<AblationRow[]
   return rows;
 }
 
+interface RegroundingTally {
+  candidates: number;
+  withCve: number;
+  validCitations: number;
+  freshCitations: number;
+}
+
+export interface RegroundingSummary {
+  activeTargets: number;
+  grounded: RegroundingTally;
+  ungrounded: RegroundingTally;
+}
+
+/**
+ * Aggregate the re-grounding (active-disclosure) rows: candidates that exist
+ * only because an exploitation step disclosed the stack AND grounding was live.
+ * Reporting grounded vs ungrounded makes the value of mid-chain re-grounding
+ * measurable rather than asserted.
+ */
+export function summarizeRegrounding(rows: AblationRow[]): RegroundingSummary {
+  const active = rows.filter((r) => r.target.disclosure === "active");
+  const sum = (cond: "grounded" | "ungrounded", pick: (s: ConditionScore) => number): number =>
+    active.reduce((n, r) => n + pick(r[cond]), 0);
+  const tally = (cond: "grounded" | "ungrounded"): RegroundingTally => ({
+    candidates: sum(cond, (s) => s.candidates),
+    withCve: sum(cond, (s) => s.withCve),
+    validCitations: sum(cond, (s) => s.validCitations),
+    freshCitations: sum(cond, (s) => s.freshCitations),
+  });
+  return {
+    activeTargets: active.length,
+    grounded: tally("grounded"),
+    ungrounded: tally("ungrounded"),
+  };
+}
+
+/** A human-readable headline for the re-grounding delta; empty if no active rows. */
+export function formatRegrounding(rows: AblationRow[]): string {
+  const s = summarizeRegrounding(rows);
+  if (s.activeTargets === 0) return "";
+  const g = s.grounded;
+  const u = s.ungrounded;
+  return [
+    `re-grounding (mid-chain, active disclosure) — ${s.activeTargets} fingerprint(s) provoked from the stack, then grounded live:`,
+    `  grounded   → ${g.candidates} candidate(s) · ${g.withCve} CVE-cited · ${g.validCitations} valid · ${g.freshCitations} post-cutoff`,
+    `  ungrounded → ${u.candidates} candidate(s) · ${u.withCve} CVE-cited · ${u.validCitations} valid · ${u.freshCitations} post-cutoff`,
+  ].join("\n");
+}
+
 function cell(value: string, width: number): string {
   return value.length >= width ? `${value.slice(0, width - 1)} ` : value.padEnd(width);
 }
@@ -104,8 +162,9 @@ export function formatAblationTable(rows: AblationRow[]): string {
       ["grounded", row.grounded],
       ["ungrounded", row.ungrounded],
     ] as const) {
+      const lab = row.target.disclosure === "active" ? `${row.target.lab} ⟳` : row.target.lab;
       lines.push(
-        cell(row.target.lab, 14) +
+        cell(lab, 14) +
           cell(`${row.target.component} ${row.target.version}`, 26) +
           cell(cond, 12) +
           cell(String(s.candidates), 6) +

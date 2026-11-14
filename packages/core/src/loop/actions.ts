@@ -42,6 +42,15 @@ export const T_AUTH_BYPASS = "SQL Injection — authentication bypass";
 export const T_ADMIN_ACCESS = "Authenticated admin access";
 
 /**
+ * Active fingerprinting seed. Routed through the keyword classifier (not an
+ * exact chain match) to the error-based SQL-injection check: the quote probe
+ * trips a DB error page that leaks the server framework and version, which the
+ * loop re-grounds live. Runs first, deterministically, so the attack surface is
+ * expanded before planner-driven exploitation begins.
+ */
+export const T_SQLI_DISCLOSURE = "SQL Injection — stack disclosure";
+
+/**
  * A single exploit attempt. This is the one deliberately small, lab-specific
  * surface: hand-written attempts against the authorized target go HERE, each
  * narrow and readable. It is NOT a generalized exploit toolkit and embeds no
@@ -344,6 +353,24 @@ function surfaceFor(url: string, path: string): string {
 const SQL_ERROR =
   /\bsql(ite)?(3)?\b|SQLITE_ERROR|syntax error|unterminated|ORA-\d{3,}|psql:|postgres|mysql_fetch|near ["']|unrecognized token|no such column/i;
 
+// A framework/version banner leaked on an error page — e.g. Juice Shop's 500
+// page titled "OWASP Juice Shop (Express ^4.22.1)". The parenthetical names the
+// server framework and its version: a fresh fingerprint the quiet surface never
+// exposed, pried loose only once an injection forced an error.
+const FRAMEWORK_BANNER = /\(([A-Za-z][\w.-]*?)\s+\^?v?(\d[\w.]*)\)/;
+
+/** Extract a leaked framework banner from a response as a fingerprint artifact. */
+function bannerArtifact(snippet: string, from: string): Artifact | undefined {
+  const m = snippet.match(FRAMEWORK_BANNER);
+  if (!m?.[1] || !m[2]) return undefined;
+  return {
+    kind: "fingerprint",
+    value: `${m[1]}@${m[2]}`,
+    label: `${m[1]} ${m[2]} (leaked by an error page)`,
+    from,
+  };
+}
+
 /**
  * SQL injection — error-based, non-destructive: append a quote-pair that closes
  * both single- and double-quoted string contexts and look for a leaked DB
@@ -362,10 +389,12 @@ async function sqlInjectionCheck(
   const { res, snippet, base } = sent;
 
   if (SQL_ERROR.test(snippet)) {
+    const banner = bannerArtifact(snippet, technique);
     return {
       ok: true,
       note: `${technique}: DB error surfaced by a quote probe (error-based SQLi signal)`,
       applicable: true,
+      ...(banner ? { discovered: [banner] } : {}),
       ...base,
     };
   }

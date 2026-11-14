@@ -18,6 +18,7 @@ import {
   attempt,
   findingProfile,
   T_AUTH_BYPASS,
+  T_SQLI_DISCLOSURE,
 } from "./actions.js";
 import { type AttackContext, newContext } from "./context.js";
 import { interpret } from "./interpret.js";
@@ -135,10 +136,13 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   const probeUrl = reconResult.endpoints[0]?.url ?? scope.target;
   const context: AttackContext = newContext(scope.objective, hint);
   const queue: WorkItem[] = [];
+  // Fingerprints already grounded, so a banner is re-grounded at most once.
+  const grounded = new Set<string>();
 
   // Grounded hypotheses per fingerprint — best-effort; a budget stop here just
   // means we proceed with the generic access probes below.
   for (const fp of reconResult.fingerprints) {
+    grounded.add(`${fp.component}@${fp.version}`);
     if (overBudget("hypothesis")) break;
     let candidates: Candidate[] = [];
     try {
@@ -174,6 +178,12 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   }
   queue.push({ technique: "access-probe", url: scope.target, tier: 1, retries: 0, step: 1 });
 
+  // Active fingerprinting runs FIRST (unshifted to the front, exempt from the
+  // planner): a quote probe trips an error page that discloses the framework
+  // and version, which the loop re-grounds live — so the surface is expanded
+  // before exploitation, not only at passive recon.
+  queue.unshift({ technique: T_SQLI_DISCLOSURE, url: scope.target, tier: 1, retries: 0, step: 1 });
+
   let tier2: Session | undefined;
   let escalated = false;
   const confirmed: { title: string; severity: string }[] = [];
@@ -189,7 +199,10 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
       // Plan: let the model choose the next action from the pending queue,
       // reasoning over the world-model. Front-of-queue is the deterministic
       // floor — a failed, invalid, or budget-stopped plan never stalls the run.
-      if (deps.plan && queue.length > 1) {
+      // The first step is exempt: it is a deterministic active-fingerprint probe
+      // (front of queue) that forces the stack to disclose its framework so the
+      // surface is re-grounded before planner-driven exploitation begins.
+      if (deps.plan && queue.length > 1 && state.steps > 0) {
         let decision: Awaited<ReturnType<NonNullable<LoopDeps["plan"]>>> | undefined;
         try {
           decision = await deps.plan({
@@ -253,7 +266,57 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         confirmed.push({ title: finding.title, severity: finding.severity });
 
         // Publish discovered artifacts to the world-model so later steps use them.
-        if (result.discovered) context.artifacts.push(...result.discovered);
+        if (result.discovered) {
+          context.artifacts.push(...result.discovered);
+          // Mid-chain re-grounding: when a step forces the stack to leak a
+          // fresh component/version (an injection error page naming the
+          // framework), ground that newly-exposed surface against live
+          // advisories. Tavily keeps opening steps as the attack expands, not
+          // only at recon. Budget-guarded; each banner is grounded once. The
+          // new candidates queue behind the in-flight chain so the objective is
+          // never delayed — the live re-query itself is the expansion.
+          for (const art of result.discovered) {
+            if (art.kind !== "fingerprint" || grounded.has(art.value)) continue;
+            grounded.add(art.value);
+            if (overBudget("hypothesis")) break;
+            const [component = "unknown", version = "unknown"] = art.value.split("@");
+            let more: Candidate[] = [];
+            try {
+              more = await deps.hypothesize({ component, version });
+            } catch (err) {
+              if (err instanceof BudgetExceededError) {
+                announceBudget("hypothesis");
+                break;
+              }
+              bus.emit("hypothesis.failed", {
+                component,
+                version,
+                reason: err instanceof Error ? err.message : String(err),
+              });
+              continue;
+            }
+            for (const c of more) {
+              if (context.visited.has(`${c.technique}|${probeUrl}`)) continue;
+              queue.push({
+                technique: c.technique,
+                url: probeUrl,
+                tier: item.tier,
+                retries: 0,
+                cve: c.cve,
+                parentId: finding.id,
+                step: item.step + 1,
+              });
+            }
+            if (more.length > 0) {
+              bus.emit("chain.step", {
+                step: item.step,
+                via: item.technique,
+                produced: `re-grounded ${component} ${version} → ${more.length} candidate(s)`,
+                note: "mid-chain Tavily re-grounding — attack surface expanded",
+              });
+            }
+          }
+        }
 
         // Seed follow-ups at the FRONT so the chain is pursued depth-first,
         // before the loop drains unrelated probes. Skip a seed already

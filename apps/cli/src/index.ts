@@ -7,6 +7,7 @@ import {
   type Finding,
   type FrozenTarget,
   formatAblationTable,
+  formatRegrounding,
   Gateway,
   groundedLookup,
   loadScope,
@@ -219,6 +220,8 @@ program
     const frozen = JSON.parse(readFileSync(fromCwd(opts.targets), "utf8")) as FrozenTarget[];
     const rows = await runAblation(frozen);
     console.log(`\n${formatAblationTable(rows)}\n`);
+    const regrounding = formatRegrounding(rows);
+    if (regrounding) console.log(`${regrounding}\n`);
     if (opts.out) {
       const out = fromCwd(opts.out);
       writeFileSync(out, JSON.stringify(rows, null, 2));
