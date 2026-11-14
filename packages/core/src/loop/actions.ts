@@ -447,8 +447,17 @@ function surfaceFor(url: string, path: string): string {
 
 // --- per-technique checks --------------------------------------------------
 
+// A LEAKED DATABASE ERROR — an actual engine/driver error signature, not the
+// topic word "SQL". The bare word matched any page that merely *mentions* SQL — a
+// nav link reading "SQL Injection", a security-teaching app's lesson titles
+// ("1.sql.injection.title") — which, scanned in a rendered SPA DOM, produced a
+// critical false positive on WebGoat. Each alternative below is text a database or
+// its driver emits on a parse/execution failure (MySQL/MariaDB, SQLite, Postgres,
+// Oracle, SQL Server, and Python/Java driver exception classes), so the signal is
+// the error, not the subject. A benign-control differential (signalIsPayloadCaused)
+// backs this up: even a matched string must be absent from an ordinary request.
 const SQL_ERROR =
-  /\bsql(ite)?(3)?\b|SQLITE_ERROR|syntax error|unterminated|ORA-\d{3,}|psql:|postgres|mysql_fetch|near ["']|unrecognized token|no such column/i;
+  /error in your (?:sql|mysql) syntax|warning:\s*(?:mysqli?|pg|oci8?|sqlsrv|sqlite)_|mysqli?_(?:fetch|num_rows|query)|supplied argument is not a valid mysql|unterminated quoted string|quoted string not properly terminated|unclosed quotation mark|ORA-\d{3,}|SQLSTATE\[|SQLITE_ERROR|(?:sqlite3?|sqlalchemy|psycopg2?)[.\w]*error|\b(?:operational|programming|integrity)error\b|org\.postgresql|org\.h2\.|com\.mysql|psql:|unrecognized token|no such column|near ["']|syntax error at or near|incorrect syntax near/i;
 
 // A framework/version banner leaked on an error page — e.g. Juice Shop's 500
 // page titled "OWASP Juice Shop (Express ^4.22.1)". The parenthetical names the
@@ -628,6 +637,38 @@ function mutatingSkip(technique: string): AttemptResult {
   };
 }
 
+/**
+ * Control differential for a PRESENCE-based signal (a leaked DB error, host-file
+ * contents, shell output). The same input is re-sent with a BENIGN value, and the
+ * signal counts only if it is ABSENT from that control response. A presence signal
+ * proves injection only when it appears in reaction to the payload and NOT in an
+ * ordinary request; otherwise the "signal" is the application's own content — a
+ * security-teaching app's lesson text, a nav menu naming "SQL Injection", an example
+ * `/etc/passwd` printed on the page — which is there regardless of input. This is the
+ * precision backstop that caught the WebGoat critical false positive, where
+ * `start.mvc` returned byte-identical content for the payload and a benign value. If
+ * the control cannot be fetched cleanly we do not let a transient failure suppress a
+ * real finding: the payload signal stands.
+ */
+async function signalIsPayloadCaused(
+  session: Session,
+  opts: AttemptOpts,
+  field: string | undefined,
+  benign: string,
+  pattern: RegExp,
+  defaultKey = "q",
+): Promise<boolean> {
+  const { req, label } = injectionRequest(opts, field, benign, defaultKey);
+  const sent = await rawSend(session, req, label);
+  if (sent.kind !== "ok") return true;
+  return !pattern.test(sent.scan);
+}
+
+/** A benign control value: alphanumeric, no quote/metacharacter, won't trip a sink. */
+function benignControlValue(): string {
+  return `nf${Math.random().toString(36).slice(2, 8)}`;
+}
+
 async function sqlInjectionCheck(
   session: Session,
   technique: string,
@@ -649,11 +690,14 @@ async function sqlInjectionCheck(
     }
     const { res, scan, base } = sent;
 
-    if (SQL_ERROR.test(scan)) {
+    if (
+      SQL_ERROR.test(scan) &&
+      (await signalIsPayloadCaused(session, opts, field, benignControlValue(), SQL_ERROR))
+    ) {
       const banner = bannerArtifact(scan, technique);
       return {
         ok: true,
-        note: `${technique}: DB error surfaced by a quote probe on '${field ?? "q"}' (error-based SQLi signal)`,
+        note: `${technique}: DB error surfaced by a quote probe on '${field ?? "q"}' and absent from a benign control (error-based SQLi signal)`,
         applicable: true,
         ...(banner ? { discovered: [banner] } : {}),
         ...base,
@@ -807,10 +851,20 @@ async function pathTraversalCheck(
       continue;
     }
     const { scan, base } = sent;
-    if (TRAVERSAL_HIT.test(scan)) {
+    if (
+      TRAVERSAL_HIT.test(scan) &&
+      (await signalIsPayloadCaused(
+        session,
+        opts,
+        field,
+        benignControlValue(),
+        TRAVERSAL_HIT,
+        "file",
+      ))
+    ) {
       return {
         ok: true,
-        note: `${technique}: host file contents leaked via '${field ?? "file"}' dot-dot sequence (path-traversal signal)`,
+        note: `${technique}: host file contents leaked via '${field ?? "file"}' dot-dot sequence and absent from a benign control (path-traversal signal)`,
         applicable: true,
         ...base,
       };
@@ -861,10 +915,13 @@ async function commandInjectionCheck(
         continue;
       }
       const { scan, base } = sent;
-      if (CMD_OUTPUT.test(scan)) {
+      if (
+        CMD_OUTPUT.test(scan) &&
+        (await signalIsPayloadCaused(session, opts, field, "127.0.0.1", CMD_OUTPUT))
+      ) {
         return {
           ok: true,
-          note: `${technique}: shell command output observed via '${field ?? "q"}' (command-injection signal)`,
+          note: `${technique}: shell command output observed via '${field ?? "q"}' and absent from a benign control (command-injection signal)`,
           applicable: true,
           ...base,
         };

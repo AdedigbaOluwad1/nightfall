@@ -607,6 +607,38 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
     expect(bodies.some((b) => b.includes("btnSign=Sign") && b.includes("entry="))).toBe(true);
   });
 
+  it("does not confirm SQLi when SQL vocabulary is static page content (WebGoat-style FP)", async () => {
+    // A security-teaching app whose page always carries the words "SQL Injection"
+    // (a lesson menu / nav), returned byte-identically regardless of the payload.
+    // The tightened error pattern must not match the topic word, and even if it did
+    // the benign-control differential must reject a signal present without a payload.
+    const teaching = new StubSession(() => ({
+      headers: { "content-type": "text/html" },
+      body: '<ul><li><a href="SqlInjection.lesson">SQL Injection</a></li><li>sql.injection.title</li></ul>',
+    }));
+    const miss = await attempt(
+      teaching,
+      "SQL Injection",
+      opts({ url: "http://localhost:9/start.mvc", method: "GET" }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("rejects a DB-error string that is also present without the payload", async () => {
+    // The endpoint returns a real DB-error signature on EVERY request, not in
+    // reaction to the quote — so it is app content, not an injection. The control
+    // differential must suppress it.
+    const alwaysErrors = new StubSession(() => ({
+      body: 'sqlite3.OperationalError: near "x": syntax error',
+    }));
+    const miss = await attempt(
+      alwaysErrors,
+      "SQL Injection",
+      opts({ url: "http://localhost:9/report?id=1", method: "GET", fields: ["id"] }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
   it("confirms SQL injection surfaced in a GraphQL errors array", async () => {
     const gqlSqli = new StubSession((req) =>
       inputOf(req).includes("'")
