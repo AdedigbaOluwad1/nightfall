@@ -32,6 +32,10 @@ interface WorkItem {
   tier: 1 | 2;
   retries: number;
   cve?: string;
+  /** HTTP method of the endpoint, when recon recorded a form. */
+  method?: "GET" | "POST";
+  /** Injectable form fields recon captured, for a form-aware probe. */
+  fields?: string[];
   /** Finding id of the step that seeded this one — the attack-graph edge. */
   parentId?: string;
   /** 1-based position in the chain. */
@@ -92,7 +96,7 @@ function toFinding(item: WorkItem, result: AttemptResult, scopeId: string): Find
     cve: item.cve ?? "",
     cvss: profile.cvss,
     cvssScore: profile.cvssScore,
-    basis: profile.basis,
+    basis: result.basis ?? profile.basis,
     evidence: result.evidence
       ? [{ ...result.evidence, note: result.evidence.note ?? result.note }]
       : [{ request: `GET ${item.url}`, response: "", note: result.note }],
@@ -189,8 +193,42 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   queue.push({ technique: T_AUTH_BYPASS, url: scope.target, tier: 1, retries: 0, step: 1 });
 
   // Always probe the discovered surface + the target itself for broken access.
-  for (const ep of reconResult.endpoints) {
+  // A form or parameterized endpoint also gets a form-aware SQL-injection probe
+  // carrying its method and fields, so the injection lands on the input recon
+  // actually found — not only the first target's conventional search shape.
+  // Attack field-bearing form endpoints before bare parameter endpoints. An
+  // injectable form input (a lookup's host field, a login's username) is far more
+  // likely to yield a finding than a navigation/router query param, and a cold
+  // run's step budget is finite: on a router-style app (dozens of `?page=` links)
+  // front-loading the real inputs lets the battery reach them before the budget
+  // drains probing router params. Stable within equal field counts.
+  const surface = reconResult.endpoints
+    .map((ep, i) => ({ ep, i }))
+    .sort((a, b) => (b.ep.fields?.length ?? 0) - (a.ep.fields?.length ?? 0) || a.i - b.i)
+    .map((x) => x.ep);
+  for (const ep of surface) {
     queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
+    if (ep.hasParams || (ep.fields?.length ?? 0) > 0) {
+      // A parameterized or form endpoint gets the full read-only injection battery,
+      // each probe form-aware (targets the endpoint's own fields/params). The
+      // checks self-skip a state-changing form, so queueing them is safe.
+      for (const technique of [
+        "SQL Injection",
+        "Reflected Cross-Site Scripting",
+        "OS Command Injection",
+        "Path Traversal",
+      ]) {
+        queue.push({
+          technique,
+          url: ep.url,
+          method: ep.method,
+          fields: ep.fields,
+          tier: 1,
+          retries: 0,
+          step: 1,
+        });
+      }
+    }
   }
   queue.push({ technique: "access-probe", url: scope.target, tier: 1, retries: 0, step: 1 });
 
@@ -262,6 +300,9 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         result = await deps.attempt(session, item.technique, {
           useSession: true,
           url: item.url,
+          method: item.method,
+          fields: item.fields,
+          authenticated: scope.credentials.length > 0,
           objectiveHint: hint,
           context,
         });
