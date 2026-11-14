@@ -104,9 +104,31 @@ export class HttpSession implements Session {
     const xsrf = await this.cookieHeaderToken();
     if (xsrf) headers["x-csrf-token"] = xsrf;
 
-    await this.fetchGated(form.action, { method: "POST", headers, body: body.toString() });
-    this.loggedIn = true;
-    bus.emit("session.login", { boundary: this.boundary, tier: 1 });
+    const res = await this.fetchGated(form.action, {
+      method: "POST",
+      headers,
+      body: body.toString(),
+    });
+
+    // Verify the login actually took, rather than trusting that a POST was sent.
+    // A failed login echoes the form back (a password field is still present) or
+    // redirects straight back to the login URL; a success lands elsewhere with no
+    // password field. Silently assuming success turns a broken login (wrong field
+    // names, a rejected token, a missing submit button) into a false "0 findings"
+    // that is indistinguishable from an honest clean scan — the worst outcome.
+    const after = await res.text();
+    const stillLoginForm = /<input[^>]*type=["']?password/i.test(after);
+    const bouncedToLogin = res.url ? res.url.split("#")[0] === cred.loginUrl.split("#")[0] : false;
+    const ok = !stillLoginForm && !bouncedToLogin;
+
+    this.loggedIn = ok;
+    bus.emit("session.login", { boundary: this.boundary, tier: 1, ok });
+    if (!ok) {
+      throw new Error(
+        `login did not authenticate (${res.status}) — the login form was returned, ` +
+          `so the credentials, field names, CSRF token, or submit field may be wrong`,
+      );
+    }
   }
 
   async request(req: SessionRequest): Promise<SessionResponse> {
@@ -158,8 +180,17 @@ export class HttpSession implements Session {
         const name = $(el).attr("name");
         if (!name) return;
         const type = ($(el).attr("type") ?? "text").toLowerCase();
-        if (type === "hidden") hidden[name] = $(el).attr("value") ?? "";
+        // Carry hidden tokens AND the submit button verbatim: many apps gate the
+        // login on the submit being present (DVWA checks isset($_POST['Login'])),
+        // so dropping it silently fails the login.
+        if (type === "hidden" || type === "submit") hidden[name] = $(el).attr("value") ?? "";
         else if (type === "password") passField = name;
+      });
+      // A <button type="submit" name="..."> is a submit input the server may require.
+      scope.find("button").each((_, el) => {
+        const name = $(el).attr("name");
+        const type = ($(el).attr("type") ?? "submit").toLowerCase();
+        if (name && type === "submit") hidden[name] = $(el).attr("value") ?? "";
       });
 
       const named = scope

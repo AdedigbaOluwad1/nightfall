@@ -7,7 +7,7 @@ import type { Gateway } from "../gateway/bifrostClient.js";
 import { BudgetExceededError } from "../gateway/budget.js";
 import { type Candidate, groundedLookup } from "../hypothesis/tavilyClient.js";
 import type { Fingerprint } from "../recon/fingerprint.js";
-import { type ReconResult, recon } from "../recon/index.js";
+import { type GraphQLProbe, type ReconResult, recon } from "../recon/index.js";
 import type { ScopeGate } from "../scope/gate.js";
 import type { ScopeFile } from "../scope/schema.js";
 import { BrowserSession } from "../session/browserSession.js";
@@ -32,6 +32,14 @@ interface WorkItem {
   tier: 1 | 2;
   retries: number;
   cve?: string;
+  /** HTTP method of the endpoint, when recon recorded a form. */
+  method?: "GET" | "POST";
+  /** Injectable form fields recon captured, for a form-aware probe. */
+  fields?: string[];
+  /** Every named control with its default value, to resubmit the complete form. */
+  formData?: Record<string, string>;
+  /** A GraphQL Query-field argument to inject into, when this targets a GraphQL endpoint. */
+  graphql?: GraphQLProbe;
   /** Finding id of the step that seeded this one — the attack-graph edge. */
   parentId?: string;
   /** 1-based position in the chain. */
@@ -92,7 +100,7 @@ function toFinding(item: WorkItem, result: AttemptResult, scopeId: string): Find
     cve: item.cve ?? "",
     cvss: profile.cvss,
     cvssScore: profile.cvssScore,
-    basis: profile.basis,
+    basis: result.basis ?? profile.basis,
     evidence: result.evidence
       ? [{ ...result.evidence, note: result.evidence.note ?? result.note }]
       : [{ request: `GET ${item.url}`, response: "", note: result.note }],
@@ -122,7 +130,13 @@ export function scopeId(scope: ScopeFile): string {
 async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise<void> {
   const sid = scopeId(scope);
   const primary = deps.session;
-  await primary.login().catch(() => undefined); // an unauthenticated session is still valid
+  // Attempt login if credentials were provided. A run with no credentials is a valid
+  // unauthenticated run (login() returns without a throw). When credentials WERE given
+  // and login fails to authenticate, login() emits session.login {ok:false} (rendered
+  // loudly) and throws: we catch so the run can still probe any unauthenticated
+  // surface, but the failure is on the event stream — never swallowed into a "0
+  // findings" that looks like an honest clean scan. The failure mode we must not hide.
+  await primary.login().catch(() => undefined);
 
   let budgetAnnounced = false;
   const announceBudget = (stage: "hypothesis" | "attempt"): void => {
@@ -189,8 +203,50 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   queue.push({ technique: T_AUTH_BYPASS, url: scope.target, tier: 1, retries: 0, step: 1 });
 
   // Always probe the discovered surface + the target itself for broken access.
-  for (const ep of reconResult.endpoints) {
-    queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
+  // A form or parameterized endpoint also gets a form-aware SQL-injection probe
+  // carrying its method and fields, so the injection lands on the input recon
+  // actually found — not only the first target's conventional search shape.
+  // Attack field-bearing form endpoints before bare parameter endpoints. An
+  // injectable form input (a lookup's host field, a login's username) is far more
+  // likely to yield a finding than a navigation/router query param, and a cold
+  // run's step budget is finite: on a router-style app (dozens of `?page=` links)
+  // front-loading the real inputs lets the battery reach them before the budget
+  // drains probing router params. Stable within equal field counts.
+  const weight = (ep: (typeof reconResult.endpoints)[number]) =>
+    ep.graphql ? 1 : (ep.fields?.length ?? 0);
+  const surface = reconResult.endpoints
+    .map((ep, i) => ({ ep, i }))
+    .sort((a, b) => weight(b.ep) - weight(a.ep) || a.i - b.i)
+    .map((x) => x.ep);
+  for (const ep of surface) {
+    // A GraphQL endpoint answers only POST queries, so a GET access-probe is noise.
+    if (!ep.graphql) {
+      queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
+    }
+    if (ep.hasParams || (ep.fields?.length ?? 0) > 0) {
+      // A parameterized, form, or GraphQL endpoint gets the full read-only injection
+      // battery, each probe input-aware (targets the endpoint's own fields/params/
+      // GraphQL argument). The checks self-skip a state-changing form, so queueing
+      // them is safe.
+      for (const technique of [
+        "SQL Injection",
+        "Reflected Cross-Site Scripting",
+        "OS Command Injection",
+        "Path Traversal",
+      ]) {
+        queue.push({
+          technique,
+          url: ep.url,
+          method: ep.method,
+          fields: ep.fields,
+          formData: ep.formData,
+          graphql: ep.graphql,
+          tier: 1,
+          retries: 0,
+          step: 1,
+        });
+      }
+    }
   }
   queue.push({ technique: "access-probe", url: scope.target, tier: 1, retries: 0, step: 1 });
 
@@ -262,6 +318,11 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         result = await deps.attempt(session, item.technique, {
           useSession: true,
           url: item.url,
+          method: item.method,
+          fields: item.fields,
+          formData: item.formData,
+          graphql: item.graphql,
+          authenticated: scope.credentials.length > 0,
           objectiveHint: hint,
           context,
         });

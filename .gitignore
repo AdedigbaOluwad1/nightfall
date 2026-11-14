@@ -7,5 +7,3 @@ dist/
 evidence/*.jsonl
 runs/
 .DS_Store
-
-ROLE_R1_agent_core.md

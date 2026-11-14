@@ -33,7 +33,7 @@ export interface NightfallEvents {
     cacheHit: boolean;
     priceSource?: "override" | "catalog" | "table" | "estimate";
   };
-  "session.login": { boundary: string; tier: 1 | 2 };
+  "session.login": { boundary: string; tier: 1 | 2; ok: boolean };
   "budget.exceeded": { capUsd: number; spentUsd: number; stage: "hypothesis" | "attempt" };
   "finding.confirmed": { id: string; title: string; severity: Severity };
   "chain.step": {

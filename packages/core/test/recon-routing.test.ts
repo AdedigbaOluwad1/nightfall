@@ -62,3 +62,128 @@ describe("recon — gate routing (zero out-of-scope)", () => {
     expect(all).not.toContain("action=delete");
   });
 });
+
+const OPENAPI_SPEC = JSON.stringify({
+  openapi: "3.0.1",
+  servers: [{ url: "/" }],
+  paths: {
+    "/users/v1/{username}": {
+      get: { parameters: [{ name: "username", in: "path" }] },
+      delete: { parameters: [{ name: "username", in: "path" }] },
+    },
+    "/books/v1/{book_title}": { get: { parameters: [{ name: "book_title", in: "path" }] } },
+    "/search": { get: { parameters: [{ name: "q", in: "query" }] } },
+    "/users/v1/register": { post: {} },
+    "/health": { get: {} },
+  },
+});
+
+class SpecSession implements Session {
+  readonly tier = 1 as const;
+  async login(): Promise<void> {}
+  async request(req: SessionRequest): Promise<SessionResponse> {
+    if (req.url.endsWith("/openapi.json")) {
+      return { status: 200, headers: { "content-type": "application/json" }, body: OPENAPI_SPEC };
+    }
+    return { status: 200, headers: { "content-type": "application/json" }, body: "{}" };
+  }
+  async dispose(): Promise<void> {}
+}
+
+const GQL_SCHEMA = JSON.stringify({
+  data: {
+    __schema: {
+      queryType: { name: "Query" },
+      types: [
+        {
+          kind: "OBJECT",
+          name: "Query",
+          fields: [
+            {
+              name: "systemDebug",
+              args: [{ name: "arg", type: { kind: "SCALAR", name: "String" } }],
+              type: { kind: "SCALAR", name: "String" },
+            },
+            {
+              name: "pastes",
+              args: [{ name: "filter", type: { kind: "SCALAR", name: "String" } }],
+              type: { kind: "LIST", name: null, ofType: { kind: "OBJECT", name: "PasteObject" } },
+            },
+            { name: "health", args: [], type: { kind: "SCALAR", name: "String" } },
+          ],
+        },
+        {
+          kind: "OBJECT",
+          name: "PasteObject",
+          fields: [{ name: "id", type: { kind: "SCALAR", name: "ID" } }],
+        },
+      ],
+    },
+  },
+});
+
+class GqlSession implements Session {
+  readonly tier = 1 as const;
+  async login(): Promise<void> {}
+  async request(req: SessionRequest): Promise<SessionResponse> {
+    if (req.method === "POST") {
+      const body = req.body ?? "";
+      if (body.includes("__schema")) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: GQL_SCHEMA };
+      }
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: '{"data":{"__typename":"Query"}}',
+      };
+    }
+    return { status: 200, headers: { "content-type": "text/html" }, body: "<html></html>" };
+  }
+  async dispose(): Promise<void> {}
+}
+
+describe("recon — GraphQL introspection (Query-only, read-only)", () => {
+  it("enumerates Query fields' string args with a valid selection, skipping no-arg fields", async () => {
+    const result = await recon(new GqlSession(), gate, scope);
+    const probes = result.endpoints.filter((e) => e.graphql).map((e) => e.graphql);
+
+    const debug = probes.find((g) => g?.field === "systemDebug");
+    expect(debug).toBeDefined();
+    expect(debug?.arg).toBe("arg");
+    expect(debug?.selection).toBe(""); // scalar return needs no selection
+
+    const pastes = probes.find((g) => g?.field === "pastes");
+    expect(pastes?.arg).toBe("filter");
+    expect(pastes?.selection).toBe(" { id }"); // object return needs a scalar subfield
+
+    // A field with no string argument is not a probe.
+    expect(probes.some((g) => g?.field === "health")).toBe(false);
+    // Every GraphQL endpoint is the gated POST endpoint.
+    for (const e of result.endpoints.filter((x) => x.graphql)) {
+      expect(e.method).toBe("POST");
+      expect(gate.check(e.url).allowed).toBe(true);
+    }
+  });
+});
+
+describe("recon — OpenAPI ingestion (JSON API surface)", () => {
+  it("enumerates GET path/query params from a served spec and skips non-GET ops", async () => {
+    const result = await recon(new SpecSession(), gate, scope);
+    const byUrl = Object.fromEntries(result.endpoints.map((e) => [e.url, e]));
+
+    // GET path-param endpoints discovered with their injectable field.
+    expect(byUrl["http://localhost:3000/users/v1/{username}"]?.fields).toEqual(["username"]);
+    expect(byUrl["http://localhost:3000/books/v1/{book_title}"]?.fields).toEqual(["book_title"]);
+    // GET query param discovered.
+    expect(byUrl["http://localhost:3000/search"]?.fields).toEqual(["q"]);
+
+    // A state-changing POST is not emitted (read-only), and a GET with no input is skipped.
+    const urls = result.endpoints.map((e) => e.url);
+    expect(urls).not.toContain("http://localhost:3000/users/v1/register");
+    expect(urls).not.toContain("http://localhost:3000/health");
+
+    // Every emitted endpoint stays in scope.
+    for (const ep of result.endpoints)
+      expect(gate.check(ep.url.replace(/\{[^}]+\}/g, "1")).allowed).toBe(true);
+  });
+});

