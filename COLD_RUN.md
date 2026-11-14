@@ -86,3 +86,158 @@ session. Wall-clock: 41.8s (recon 2%, hypothesis 37%, exploit 60%).
 - Either a cold target whose easy wins fall inside the current probe set, or a
   broadened (still reviewed, still read-only) probe set — a deliberate increment,
   not a demo-day hack.
+
+## Multi-lab generalization pass (four more unseen stacks)
+
+To prove the agent isn't overfit to its three home labs, we ran it against four
+further targets whose source we hadn't read, spanning different languages and
+frameworks — the real "does it travel" test. Same harness, same loopback-only
+scope, \$3 budget, 25 steps, local model.
+
+| Lab     | Stack                    | Result                                                                  | Transport fails | Crashes | Scope blocks         |
+| ------- | ------------------------ | ----------------------------------------------------------------------- | --------------- | ------- | -------------------- |
+| bWAPP   | PHP 5.5.9 / Apache 2.4.7 | 0 findings, clean halt                                                  | 0               | 0       | 0                    |
+| WebGoat | Java / Spring            | 0 findings, clean halt                                                  | 0               | 0       | 0                    |
+| DVNA    | Node / Express           | FP found & fixed → 0 unauth; **1 real critical SQLi when credentialed** | 0               | 0       | 3–15 (external CDNs) |
+
+On every stack recon GET-safety held (0 transport fails, versus 27 on Mutillidae
+_before_ the fix), the full recovery vocabulary (RETRY / PIVOT / ABANDON /
+ESCALATE) fired without a single parse error from the local model, and Tier-2
+ESCALATE exercised live on the auth-gated labs with no crash.
+
+### The bug DVNA found — a false "Impact-confirmed"
+
+DVNA is a Node/Express app, the one stack Nightfall _does_ special-case. On the
+first run it reported **four high-severity Broken Access Control findings** — on
+`/login`, `/register`, and `/forgotpw` (one of them twice). Those pages are
+**public by design**: serving a login form to an anonymous caller is correct, not
+a vulnerability. Worse, each was stamped basis **"Impact-confirmed"** — the exact
+over-claim the whole safety story (SAFETY.md §7, [LIMITATIONS.md](./LIMITATIONS.md)
+§2) promises never to make.
+
+> **Intervention point.** The tempting read: "four highs on the first Express
+> target that isn't Juice Shop — the generalization works." It didn't. We read the
+> findings instead of counting them, saw they were garbage, and treated a wrong
+> _confirmation_ as more dangerous than a missed one.
+
+**Root cause.** The access probe confirms when a page returns `<400` and its body
+contains an objective keyword. DVNA's page `<title>` is "Damn Vulnerable NodeJS
+**Application**," and the objective was "gain administrative **access** to the
+**application**" — so the generic word "application" in the site chrome matched on
+every page. The response snippet is also capped _before_ the login `<form>`, so
+the existing auth-wall guard (which needs to see a password field) never fired.
+
+**The fix (shipped).** An inherently-public auth-entry path — `login`, `register`,
+`signup`, `forgot/reset-password` and their variants — can **never** be a
+broken-access-control finding, because authorization is not expected there. The
+guard keys on the **URL**, not the body, so a truncated snippet can't defeat it,
+and it deliberately does not touch genuine gated surfaces (an `/admin` page still
+confirms). A regression test locks all three DVNA paths plus a real gated surface.
+After the fix DVNA reports **0 findings** — honest, matching bWAPP and WebGoat.
+
+This is the **second** real bug a cold target has exposed that our home labs never
+would (the first was recon firing a state-changing GET, above). Both were found by
+_reading what the agent did_, not by trusting a green number — which is the only
+reason a cold run is worth running at all.
+
+### Credentialed pass — landing a real finding, and what it took
+
+After the FP fix, DVNA honestly reported **0 findings** — but DVNA is full of real
+vulnerabilities, so 0 was a coverage result, not a clean bill. We asked the honest
+follow-up: _why_ nothing, and could a reviewed, read-only increment reach one?
+
+**Why nothing.** The agent ran entirely **unauthenticated**, and DVNA (like bWAPP
+and WebGoat) gates every vulnerable route behind a login — `/app/*` 302-redirects
+to `/login`. The probes never reached a vulnerable surface. Two further mismatches
+compounded it: the agent's only login path was a Juice-Shop-specific JSON SQLi-
+bypass (DVNA uses a form login), and the injection probes were shaped to Juice
+Shop (param `q`, REST paths), not DVNA's form fields.
+
+**The increment (shipped, reviewed, read-only).** Credentialed black-box testing —
+the `credentials:` field the scope schema already carries — plus four probe-set
+broadenings, each with a regression test:
+
+1. **Recon follows markdown-rendered links.** DVNA's `/learn/*` hub links to the
+   real `/app/*` surface as _markdown_ (`[User Search](/app/usersearch)`) rendered
+   client-side, invisible to an `<a href>` crawl. Recon now also extracts markdown
+   link targets — so the authenticated surface is discovered over plain HTTP.
+2. **Recon captures form fields.** Each form endpoint now records its method and
+   injectable field names, so a probe targets the input recon actually found.
+3. **Form-aware SQL injection with a boolean oracle.** When an app swallows the
+   engine error (DVNA returns a generic "Internal Error"), the check sends two
+   payloads differing only in a boolean — `' OR '1'='1` vs `' AND '1'='2` — and
+   confirms when the always-true one returns rows the always-false one does not.
+   Read-only: it injects SELECT-side logic, never a write.
+4. **Row counting robust to page chrome.** The differential counts table rows (and
+   JSON records only in a JSON body), not the CSS/JS braces that first masked it.
+
+**Result:** against DVNA, authenticated with a registered test user, Nightfall now
+confirms exactly one finding — **SQL Injection at `POST /app/usersearch` (CWE-89,
+critical), Impact-confirmed** by the boolean oracle (`always-false → 0 rows;
+always-true → 2`) — and **no false positives** (the earlier authenticated-BAC
+noise is gone; see below). One honest critical, not a pile of inflated highs.
+
+> **Intervention point.** The first credentialed run produced **five** high
+> "Broken Access Control" findings on ordinary `/app/*` feature pages — because,
+> logged in, the access probe flagged every reachable page that echoed an
+> objective word. But an authorized user reaching a feature they're entitled to is
+> not broken access. We suppressed keyword-based BAC on authenticated runs (no
+> lower-privilege baseline ⇒ under-claim) rather than ship five wrong highs next to
+> the one right critical. The coverage this forgoes — DVNA's genuine _missing_
+> access control on `/app/admin` — is named in [LIMITATIONS.md](./LIMITATIONS.md),
+> not quietly claimed.
+
+**Operator setup (provisioning, not source-reading):** register one test user via
+DVNA's own `/register`, put its credentials in the scope file. This is the same
+category as `docker run` or Mutillidae's DB-init — standard credentialed black-box
+access, not reading the app's source.
+
+## Widened battery + whole-body detection — the page-size false negative
+
+After broadening the injection battery to fire form- and parameter-aware across the
+whole discovered surface (SQLi, reflected XSS, OS command injection, path traversal
+on every injectable input recon found, with a read-only guard that skips any
+state-changing form), we re-ran two unseen targets on the **cloud backend**
+(Gemini-4-Hydrogen via Bifrost, a different model from the local one above) to check
+the widened probes travelled: **Mutillidae** (PHP, huge pages) and **BodgeIt**
+(Java/JSP, small pages). Same loopback scope, \$3 budget, 40 steps.
+
+**First result: BodgeIt confirmed a real reflected XSS; Mutillidae found nothing —
+through two rounds of fixes.** Recon was correct (it captured every vulnerable form
+field — `target_host`, `textfile`, `ToolID`, `username`), and after a queue-ordering
+fix the probes demonstrably reached those forms. Still zero.
+
+> **Intervention point.** The tempting read: "Mutillidae is just hardened, move on."
+> We didn't. BodgeIt and Mutillidae ran the _identical_ probe code; the only
+> difference was that BodgeIt's pages are small and Mutillidae's are large. A result
+> that depends on page size, not on the vulnerability, is a detector bug, not a
+> target property.
+
+**Root cause.** Every signal check tested `response.slice(0, 2000)` — the first 2 KB
+of the body. Mutillidae wraps its output in a ~49 KB navigation/framework shell, so
+the reflected marker, the command output, and the leaked `/etc/passwd` all landed
+_below_ the window. We confirmed it directly: the DNS-lookup command output
+(`uid=33(www-data)…`) sits at byte **49,277 of a 52,326-byte page**. BodgeIt's XSS
+was found only because its signal fell inside the first 2 KB. A false negative that
+scales with page size.
+
+**The fix (shipped).** Detection now scans the whole response body (bounded to
+512 KB against a pathological payload); the evidence snippet shown in a finding stays
+bounded at 2 KB. Same probes, same payloads, same model — nothing tuned to either
+target. After the fix, on the **same run harness**:
+
+| Lab        | Stack        | Before fix | After whole-body detection                                     | Crashes | Model parse errors |
+| ---------- | ------------ | ---------- | -------------------------------------------------------------- | ------- | ------------------ |
+| Mutillidae | PHP / Apache | 0 findings | **12** — 9× SQLi (critical), 2× reflected XSS, 1× LFI (high)   | 0       | 0                  |
+| BodgeIt    | Java / JSP   | 1 XSS      | **1** reflected XSS at `/search.jsp` (unchanged — small pages) | 0       | 0                  |
+
+Zero broken-access false positives in Mutillidae's twelve (the authenticated-BAC and
+privilege-surface precision work held), zero crashes, and the cloud model drove the
+full recovery vocabulary with no parse errors — so the backend swap was clean too.
+
+This is the **third** real bug a cold/unseen target has exposed by _reading what the
+agent did_ rather than trusting a number — here, trusting a _zero_. A small
+follow-on: the command-injection probe prefixes a routable host
+(`127.0.0.1; id`) so a host-expecting sink (`nslookup`/`ping`) returns promptly
+instead of blocking on an empty argument until the probe times out, and it now tries
+both `;` and `|` separators.

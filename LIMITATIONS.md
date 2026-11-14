@@ -64,7 +64,40 @@ confirms nothing rather than firing payloads it can't reason about.
 
 **The tradeoff.** We chose provable, auditable narrowness over broad, unbounded
 offense. Coverage grows by deliberate, reviewed additions — the safety property
-does not depend on the lab being disposable.
+does not depend on the lab being disposable. Two such additions:
+
+- **The credentialed DVNA pass** (`COLD_RUN.md`): form-aware, boolean-oracle SQL
+  injection on a discovered form, which landed a real critical finding read-only.
+- **The full injection battery is now form- and parameter-aware across the whole
+  discovered surface**, not only the first target's conventional `?q=`/`?file=`
+  shape. SQL injection, reflected XSS, OS command injection, and path traversal
+  each probe every injectable form field and query parameter recon captured, in a
+  read-only guard that **skips any state-changing form** (create/update/delete/…)
+  — a POST injection never writes to a mutating sink; GETs are always allowed. The
+  classes (the closed `switch`) are unchanged; what widened is _where_ each probe
+  looks. Validated across intentionally-vulnerable labs spanning stacks (Mutillidae
+  PHP, BodgeIt Java/JSP, DVNA Node): the same probes confirm real SQLi, XSS, and
+  LFI on each without per-lab tuning.
+
+## 4. Broken access control is not confirmed on an authenticated run
+
+**What breaks.** When the agent runs with operator credentials, it does **not**
+emit broken-access-control findings from a plain reachable-plus-keyword signal — so
+a genuine _missing_ access control (e.g. DVNA's `/app/admin` reachable by a non-
+admin user) goes unreported in that mode.
+
+**Why.** Confirming BAC soundly needs a baseline: either no session (reaching a
+gated surface unauthenticated) or a second, lower-privilege principal to show a
+boundary was crossed. Authenticated with a single principal, "this page loaded" is
+just authorized access — and the alternative, flagging every reachable feature page
+that echoes an objective word, is exactly the false-positive flood we removed.
+
+**What a fix takes.** A two-principal (or authenticated-vs-anonymous) differential:
+fetch the same resource under two privilege levels and confirm only on a delta —
+the same oracle shape the boolean-SQLi check already uses.
+
+**The tradeoff.** We under-claim: one honest critical beats one honest critical
+buried under five wrong highs. Unauthenticated BAC confirmation is unaffected.
 
 ## Closed since the first audit
 
@@ -83,6 +116,16 @@ These were on this list; we fixed them rather than excuse them.
   request, plan decision, block, and gateway call — not only findings) is now
   written append-only to `*.audit.jsonl` as it happens (`events/audit.ts`), so a
   run is replayable end-to-end, not just its confirmed findings.
+- **Head-only signal detection → whole-body scan.** Every signal check (SQLi error
+  strings, reflected-XSS marker, command output, traversal file contents, leaked
+  token, CSRF-token presence) read only the first 2 KB of a response — so a real
+  flaw whose output landed below a large nav/framework shell was a silent false
+  negative that scaled with page size, not with the vuln. Mutillidae reflected its
+  DNS-lookup command output ~49 KB into a 52 KB page and went unreported while the
+  identical probe found a small page's XSS. Detection now scans the whole body
+  (bounded to 512 KB); the evidence snippet shown in a finding stays bounded at
+  2 KB. On the labs this turned a 0-finding Mutillidae run into 12 real findings
+  with no code tuned to the target (`actions.ts` `rawSend`, `DETECT_MAX`).
 
 ## What our testing still can't substitute for
 
