@@ -23,12 +23,17 @@ resolves DNS itself at connect time — the gate does not pin the IP it validate
 **What a fix takes.** Resolve once, validate the resolved IP, and pin it for the
 connection (custom lookup / agent).
 
-**The tradeoff.** For the mandated scope this is **already closed**: the lab is
-loopback-only (`allow.hosts: [localhost]`), and an unlisted host or a bare IP
-literal is refused by deny-by-default — so the dangerous rebind (to a metadata or
-private IP) can't be reached at all. The only residual is a _listed_ hostname's own
-DNS flipping, i.e. the operator rebinding their own isolated lab against themselves.
-Named, not dressed up as resolved.
+**The tradeoff.** The _dangerous_ rebind is unreachable **for any scope**, not just
+a loopback one: deny-by-default refuses an unlisted host and a bare IP literal, so a
+hostname cannot flip to a metadata or private-range address the gate never
+authorized — the classic SSRF-rebind target is blocked regardless of what the judged
+lab turns out to be. The only residual is a _listed_ hostname's own DNS flipping
+between check and connect — the operator rebinding their own authorized lab against
+itself — which is a self-inflicted edge, not an escalation. Our own example scope is
+loopback (`allow.hosts: [localhost]`), which removes even that residual; we do not
+assume the judged target is loopback, because the property above does not depend on
+it. Fully closing the residual is the IP-pin fix named above. Named, not dressed up
+as resolved.
 
 ## 2. Several finding classes are signal-based, not impact-confirmed
 
@@ -101,25 +106,42 @@ holds until a reviewed body-injection increment lands. (A GraphQL _mutation_ is 
 this same category and is deliberately never enumerated.) This is additive to the
 same closed `switch`, not a flag flip.
 
-## 4. Broken access control is not confirmed on an authenticated run
+## 4. Authenticated broken-access-control confirmation is bounded by surface discovery
 
-**What breaks.** When the agent runs with operator credentials, it does **not**
-emit broken-access-control findings from a plain reachable-plus-keyword signal — so
-a genuine _missing_ access control (e.g. DVNA's `/app/admin` reachable by a non-
-admin user) goes unreported in that mode.
+**What breaks.** The agent now **does** confirm authenticated broken access control
+— a two-principal differential ships (below) — but it can only confirm a surface it
+reaches. A privilege-denoting endpoint that is unlinked for the principals the agent
+drives, and not named in scope, will not be probed, so a real missing access control
+on an undiscovered URL still goes unreported.
 
-**Why.** Confirming BAC soundly needs a baseline: either no session (reaching a
-gated surface unauthenticated) or a second, lower-privilege principal to show a
-boundary was crossed. Authenticated with a single principal, "this page loaded" is
-just authorized access — and the alternative, flagging every reachable feature page
-that echoes an objective word, is exactly the false-positive flood we removed.
+**What now works (shipped, validated).** A vertical function-level-authorization
+differential (`loop/actions.ts` `accessControlDifferential`). List the lower-
+privilege account first in `credentials`; mark a second `role: "admin"`. A finding
+requires, in order: the lower-privilege principal reaches the surface with the
+objective signal; the surface is privilege-denoting (admin/management/config URL);
+an anonymous request to it is **denied** (proving it is gated); and — when an
+elevated principal is supplied — that principal **also** serves it (proving shared
+privileged functionality, not a per-user resource). Each gate independently rejects
+a false-positive class the removed keyword match could not: public pages (anon
+reaches them), authorized admin use (the principal is non-admin by scope), and
+per-user resources. A failed login collapses the primary into an anonymous
+principal, so a broken login cannot manufacture a finding either. Verified
+end-to-end against live DVNA: `/app/admin`, reachable by a registered non-admin user
+and denied to anonymous, confirms **Impact-confirmed**, while `/app/products`
+(reachable but not privilege-denoting) correctly does not. Seven unit tests lock
+each gate.
 
-**What a fix takes.** A two-principal (or authenticated-vs-anonymous) differential:
-fetch the same resource under two privilege levels and confirm only on a delta —
-the same oracle shape the boolean-SQLi check already uses.
+**Why the residual.** Black-box discovery is link-following recon; an admin surface
+with no inbound link from the crawled set is invisible until it is named in scope or
+surfaced some other way. The detector is sound; the limit is reach, not confirmation.
 
-**The tradeoff.** We under-claim: one honest critical beats one honest critical
-buried under five wrong highs. Unauthenticated BAC confirmation is unaffected.
+**What a fuller fix takes.** Authenticated recon that crawls as each principal (an
+admin link an anonymous crawl never sees), plus a horizontal (IDOR) differential for
+per-user resources. Additive; the differential oracle is already in place.
+
+**The tradeoff.** We still under-claim over guess: the detector fires only behind
+four independent gates, so a surface it never reaches is a missed finding, never a
+wrong one.
 
 ## 5. Mid-chain re-grounding keys on one disclosure pattern
 

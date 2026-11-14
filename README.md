@@ -65,6 +65,33 @@ docker compose -f labs/docker-compose.yml up -d dvwa
 pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.auth.scope.yaml
 ```
 
+### Two-principal broken-access-control differential
+
+List the **lower-privilege** account first and mark a second `role: "admin"`, and the
+agent runs a vertical function-level-authorization check: a surface the low-privilege
+principal reaches is a finding only when it is privilege-denoting (admin/management/
+config), an anonymous request to it is **denied**, and the elevated principal also
+serves it. Each gate rejects a false-positive class a keyword match cannot — public
+pages, authorized admin use, per-user resources — so this never reintroduces the
+reachable-plus-keyword flood. A failed login collapses to anonymous and confirms
+nothing. Validated end-to-end against DVNA's `/app/admin` (reachable by a non-admin
+user, denied to anonymous → Impact-confirmed); its reach is bounded by what recon
+discovers — see [LIMITATIONS.md](./LIMITATIONS.md) §4.
+
+```yaml
+credentials:
+  - boundary: user # listed first = the principal under test (lower privilege)
+    loginUrl: "http://localhost:8087/login"
+    username: "nfuser"
+    password: "Passw0rd!"
+    role: user
+  - boundary: admin # the elevated baseline
+    loginUrl: "http://localhost:8087/login"
+    username: "nfadmin"
+    password: "Passw0rd!"
+    role: admin
+```
+
 Credentials authenticate an authorized test; they never relax the deny-by-default gate.
 The login flow generalises across form shapes with no per-app tuning — a hidden-token +
 named-submit form (DVWA), a `<button name=…>` submit (bWAPP), and a Spring Security form

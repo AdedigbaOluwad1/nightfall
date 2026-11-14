@@ -7,6 +7,10 @@ const Credentials = z
     loginUrl: z.string().url(),
     username: z.string(),
     password: z.string(),
+    // Privilege level, for the two-principal broken-access-control differential.
+    // The lower-privilege principal under test is the first credential; a second
+    // credential marked "admin" is the elevated baseline. Defaults to "user".
+    role: z.enum(["user", "admin"]).optional(),
   })
   .strict();
 

@@ -624,6 +624,42 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
     expect(miss.ok).toBe(false);
   });
 
+  it("trips no sibling detector on a vulnerability-vocabulary lesson menu (XSS/cmdi/traversal FP audit)", async () => {
+    // The same audit the SQL case got, applied to its siblings: a teaching app
+    // (WebGoat/bWAPP/DVWA style) whose chrome names every vulnerability class and
+    // sprinkles adjacent danger words ("root", "uid", "syntax", "passwd"), served
+    // byte-identically for every request. None of these detectors match a topic
+    // word — XSS keys on a reflected nonce marker, cmdi on real shell output,
+    // traversal on real host-file contents — so a page that is pure vocabulary and
+    // reacts to no payload must confirm nothing.
+    const lessonMenu =
+      "<nav><ul>" +
+      "<li>SQL Injection</li><li>Blind SQL Injection</li>" +
+      "<li>Cross-Site Scripting (XSS)</li><li>Reflected XSS</li><li>Stored XSS</li>" +
+      "<li>OS Command Injection</li><li>Command Injection</li>" +
+      "<li>Path Traversal</li><li>Directory Traversal</li><li>Local File Inclusion (LFI)</li>" +
+      "<li>Cross-Site Request Forgery (CSRF)</li>" +
+      "</ul></nav>" +
+      "<p>root access · admin panel · user accounts · syntax · passwd · uid · daemon</p>";
+    const teaching = new StubSession(() => ({
+      headers: { "content-type": "text/html" },
+      body: lessonMenu,
+    }));
+    for (const technique of [
+      "Reflected Cross-Site Scripting",
+      "OS Command Injection",
+      "Path Traversal",
+      "Local File Inclusion",
+    ]) {
+      const miss = await attempt(
+        teaching,
+        technique,
+        opts({ url: "http://localhost:9/lesson?name=x", method: "GET", fields: ["name"] }),
+      );
+      expect(miss.ok, `${technique} must not confirm on vocabulary chrome`).toBe(false);
+    }
+  });
+
   it("rejects a DB-error string that is also present without the payload", async () => {
     // The endpoint returns a real DB-error signature on EVERY request, not in
     // reaction to the quote — so it is app content, not an injection. The control
@@ -657,5 +693,87 @@ describe("attempt — widened injection coverage (form- and param-aware)", () =>
       }),
     );
     expect(hit.ok).toBe(true);
+  });
+});
+
+describe("attempt — two-principal broken-access-control differential", () => {
+  // A fixed response per principal (the stub ignores the request), so each session
+  // models one principal's view of the same privilege-denoting surface.
+  const serves = (body: string, status = 200) =>
+    new StubSession(() => ({ status, headers: { "content-type": "text/html" }, body }));
+  const denied = () => new StubSession(() => ({ status: 403, body: "Forbidden" }));
+
+  const bac = (over: Partial<AttemptOpts>): AttemptOpts =>
+    opts({
+      url: "http://localhost:3000/admin/config",
+      authenticated: true,
+      objectiveHint: ["config"],
+      ...over,
+    });
+
+  it("confirms vertical privilege escalation: low principal reaches a gated admin surface the anon baseline is denied and the elevated principal serves", async () => {
+    const low = serves("<h1>admin config</h1> secret settings");
+    const hit = await attempt(
+      low,
+      "broken access control",
+      bac({ baseline: denied(), elevated: serves("<h1>admin config</h1> secret settings") }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/broken function-level authorization/);
+    expect(hit.basis).toMatch(/Impact-confirmed/);
+  });
+
+  it("downgrades to signal-based when no elevated principal is supplied", async () => {
+    const low = serves("<h1>admin config</h1> secret settings");
+    const hit = await attempt(low, "broken access control", bac({ baseline: denied() }));
+    expect(hit.ok).toBe(true);
+    expect(hit.basis).toMatch(/Signal-based/);
+  });
+
+  it("does not flag a surface the anonymous baseline also reaches (public, not BAC)", async () => {
+    const low = serves("<h1>admin config</h1> public settings");
+    const anonReaches = serves("<h1>admin config</h1> public settings");
+    const miss = await attempt(low, "broken access control", bac({ baseline: anonReaches }));
+    expect(miss.ok).toBe(false);
+    expect(miss.note).toMatch(/reachable anonymously/);
+  });
+
+  it("does not flag a reachable non-privilege-denoting surface", async () => {
+    const low = serves("<h1>my account config</h1>");
+    const miss = await attempt(
+      low,
+      "broken access control",
+      bac({ url: "http://localhost:3000/account/settings", baseline: denied() }),
+    );
+    expect(miss.ok).toBe(false);
+    expect(miss.note).toMatch(/not a privilege-denoting surface/);
+  });
+
+  it("does not flag when the elevated principal does not serve the surface (per-user resource, not shared admin)", async () => {
+    const low = serves("<h1>admin config</h1> my own data");
+    const miss = await attempt(
+      low,
+      "broken access control",
+      bac({ baseline: denied(), elevated: denied() }),
+    );
+    expect(miss.ok).toBe(false);
+    expect(miss.note).toMatch(/cannot confirm shared privileged functionality/);
+  });
+
+  it("collapses safely on a failed login: a low principal that is itself denied yields no finding", async () => {
+    const lowDenied = denied();
+    const miss = await attempt(
+      lowDenied,
+      "broken access control",
+      bac({ baseline: denied(), elevated: serves("<h1>admin config</h1>") }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("preserves single-principal under-claim when no baseline is threaded", async () => {
+    const low = serves("<h1>admin config</h1> secret settings");
+    const miss = await attempt(low, "broken access control", bac({}));
+    expect(miss.ok).toBe(false);
+    expect(miss.note).toMatch(/no lower-privilege baseline/);
   });
 });
