@@ -91,6 +91,32 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.
 
 How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL.md).
 
+## Results across labs
+
+Nightfall was run against nine intentionally-vulnerable apps spanning four languages and
+four surface types, with no code tuned to any target. Every finding is **control-verified**
+— the signal is present under the payload and **absent** under an otherwise-identical
+benign request — so the table carries no false positives, and the two zeros are reported
+with their specific cause, not a vague "gated".
+
+| Lab        | Stack        | Surface        | Auth           | Findings                                                                                            |
+| ---------- | ------------ | -------------- | -------------- | --------------------------------------------------------------------------------------------------- |
+| Mutillidae | PHP          | HTML           | unauth         | **14** — 6 SQLi, 7 XSS, 1 LFI                                                                       |
+| DVWA       | PHP          | HTML form      | credentialed   | **5** — 2 SQLi, 2 XSS, 1 cmdi                                                                       |
+| DVNA       | Node/Express | HTML form      | credentialed   | **4** — 2 SQLi, 1 cmdi, 1 XSS                                                                       |
+| Juice Shop | Node/Express | SPA + REST     | unauth → chain | **3** — SQLi, auth-bypass, BAC priv-esc                                                             |
+| DVGA       | Python       | GraphQL        | unauth         | **2** — SQLi, cmdi                                                                                  |
+| VAmPI      | Python/Flask | REST (OpenAPI) | unauth         | **1** — SQLi (path param)                                                                           |
+| BodgeIt    | Java/JSP     | HTML           | unauth         | **1** — reflected XSS                                                                               |
+| bWAPP      | PHP          | HTML           | credentialed   | **0** — login succeeds; injectable pages sit behind a bug-selection form the crawler does not drive |
+| WebGoat    | Java/Spring  | lesson SPA     | credentialed   | **0** — login succeeds; interactive lesson endpoints a flat crawler does not reach                  |
+
+Thirty confirmed findings across seven labs, plus two honest zeros — each a named,
+specific limitation, not a shared "gated" label. The per-lab narrative — including the
+one login-flow bug that once hid behind three of these labs, and the nav-menu
+false-positive class since removed from the SQLi detector — is in
+[COLD_RUN.md](./COLD_RUN.md).
+
 ## Layout
 
 - `packages/core` — event bus, scope gate, session layer, gateway, evidence, report.
