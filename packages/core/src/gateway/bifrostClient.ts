@@ -3,8 +3,20 @@ import OpenAI from "openai";
 import { bus } from "../events/bus.js";
 import type { StepType } from "../events/types.js";
 import type { Budget } from "./budget.js";
-import { computeCostLive } from "./pricing.js";
+import { computeCost, computeCostLive } from "./pricing.js";
 import { modelForStep } from "./routing.js";
+
+/**
+ * Worst-case cost of a call before it is made: the prompt's tokens (≈ 4 chars
+ * each) plus a full `max_tokens` completion, priced from the sync catalog. Used
+ * to reserve against the budget so the cap can never be overshot.
+ */
+function estimateCost(model: string, prompt: string): number {
+  const maxTokens = Number(process.env.NF_MAX_TOKENS ?? "1024");
+  const completion = Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 1024;
+  const promptTokens = Math.ceil(prompt.length / 4);
+  return computeCost(model, { prompt_tokens: promptTokens, completion_tokens: completion });
+}
 
 function cacheHeaders(model: string, prompt: string): Record<string, string> {
   if (process.env.NF_CACHE_ENABLED === "false") return {};
@@ -40,8 +52,8 @@ export class Gateway {
   }
 
   async complete(step: StepType, prompt: string): Promise<string> {
-    this.budget.assertUnder();
     const model = modelForStep(step);
+    this.budget.assertCanAfford(estimateCost(model, prompt));
     const { data, response } = await this.client.chat.completions
       .create(
         {
