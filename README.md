@@ -15,6 +15,21 @@ described by that scope file, behind a deny-by-default scope gate.
 > is the full design — the scope gate, the agent loop, the session tiers, and how
 > Bifrost and Tavily fit in.
 
+## Prerequisites
+
+- **Node.js 20+** (developed on 22) and **pnpm 11+** — the repo pins `pnpm@11.25.0`.
+- **Docker + Docker Compose** — to bring up the intentionally-vulnerable practice labs.
+- **Real API keys for a genuine run:** a Bifrost gateway (`BIFROST_BASE_URL` +
+  `BIFROST_API_KEY`) and a `TAVILY_API_KEY`. These are **required**, not optional — see
+  the warning below.
+
+> **A run without a working model key does not error — it degrades.** `.env.example`
+> ships placeholder values; copying it without filling in real keys lets the loop run on
+> its **deterministic probe floor** with no model planning and no live CVE grounding. Such
+> a run is now marked **`DEGRADED`** — loudly in the terminal summary and as a banner at
+> the top of the report, with `model calls: 0` — so a `$0.00`, no-model run can never be
+> mistaken for the AI-driven result. For a genuine, grounded run, set real keys first.
+
 ## Quickstart
 
 ```bash
@@ -123,6 +138,10 @@ pnpm --filter @nightfall/cli dev -- report \
 
 Your own `run` writes `nightfall-findings.jsonl`; point `report --in` at that to render
 a report for a run you drove yourself.
+
+> `run` auto-writes the report to a file beside the evidence; the standalone `report`
+> command prints to stdout by default (it is a filter) — pass `--out <path>` to write it
+> to a file instead.
 
 The Tavily grounding proof needs model quota:
 

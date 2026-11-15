@@ -9,6 +9,10 @@ export interface ReportMeta {
   scopeId?: string;
   haltedBy?: HaltReason;
   costUsd?: number;
+  /** Model calls that completed during the run — 0 on a degraded run. */
+  modelCalls?: number;
+  /** The model was never reached; findings are from the deterministic floor alone. */
+  degraded?: boolean;
   generatedAt?: Date;
 }
 
@@ -25,7 +29,10 @@ function bySeverity(a: Finding, b: Finding): number {
 }
 
 /** Confirmation basis split: impact actually achieved vs signal observed. */
-function confirmationSplit(findings: Finding[]): { impact: number; signal: number } {
+function confirmationSplit(findings: Finding[]): {
+  impact: number;
+  signal: number;
+} {
   let impact = 0;
   let signal = 0;
   for (const f of findings) {
@@ -68,9 +75,13 @@ function executiveSummary(findings: Finding[], m: ReportMeta): string {
   );
   if (chainReached) {
     lines.push(
-      `The findings are not isolated: the agent chained them into a working path to the` +
-        ` stated objective, demonstrating real-world impact rather than a list of` +
-        ` theoretical weaknesses.`,
+      m.degraded
+        ? `The findings link into a path toward the stated objective along the agent's` +
+            ` deterministic chain; note this run was degraded (no model grounding), so the` +
+            ` path reflects the scripted floor rather than live model reasoning.`
+        : `The findings are not isolated: the agent chained them into a working path to the` +
+            ` stated objective, demonstrating real-world impact rather than a list of` +
+            ` theoretical weaknesses.`,
       ``,
     );
   }
@@ -122,7 +133,7 @@ function chainSection(chain: Finding[]): string {
   chain.forEach((f, i) => {
     const flow: string[] = [];
     if (f.consumed) flow.push(`uses the **${f.consumed}**`);
-    if (f.produced?.length) flow.push(`yields the **${f.produced.join(", ")}**`);
+    if (f.produced?.length) flow.push(`yields **${f.produced.join(", ")}**`);
     const edge = flow.length ? ` — ${flow.join(", ")}` : "";
     const impact = i === chain.length - 1 ? " **← objective reached.**" : "";
     lines.push(`${i + 1}. **${f.title.split(" at ")[0]}** (${f.severity})${edge}${impact}`);
@@ -144,7 +155,7 @@ function findingSection(f: Finding, index: number): string {
   if (f.step !== undefined && (f.parentId || f.consumed || f.produced?.length)) {
     const bits: string[] = [`chain step ${f.step}`];
     if (f.consumed) bits.push(`consumes the ${f.consumed}`);
-    if (f.produced?.length) bits.push(`produces the ${f.produced.join(", ")}`);
+    if (f.produced?.length) bits.push(`produces ${f.produced.join(", ")}`);
     lines.push(`- **Attack chain:** ${bits.join(" · ")}`);
   }
   if (f.basis) lines.push(``, `**Verification**`, ``, f.basis);
@@ -191,10 +202,23 @@ export function toMarkdown(findings: Finding[], meta: ReportMeta | string): stri
   if (m.runId) runBits.push(`run \`${m.runId}\``);
   if (m.scopeId) runBits.push(`scope \`${m.scopeId}\``);
   if (m.haltedBy) runBits.push(`stopped: ${m.haltedBy}`);
+  if (m.modelCalls !== undefined) runBits.push(`model calls: ${m.modelCalls}`);
   if (m.costUsd !== undefined) runBits.push(`model spend: $${m.costUsd.toFixed(4)}`);
   if (runBits.length > 0) header.push(`**Run:** ${runBits.join(" · ")}`);
 
-  const body = [``, executiveSummary(sorted, m)];
+  const body: string[] = [``];
+  if (m.degraded) {
+    body.push(
+      `> ⚠️ **DEGRADED RUN — NO MODEL GROUNDING.** The model gateway was never reached` +
+        ` during this run (0 successful calls), so the planning and live CVE-grounding steps` +
+        ` did not execute. The findings below come from the agent's deterministic probe floor` +
+        ` alone — they are real and replayable, but this is **not** the AI-driven, grounded` +
+        ` result, and "objective reached" here reflects the scripted chain, not model reasoning.` +
+        ` Verify \`BIFROST_API_KEY\` / \`BIFROST_BASE_URL\` and re-run for a grounded report.`,
+      ``,
+    );
+  }
+  body.push(executiveSummary(sorted, m));
   body.push(
     `## Methodology`,
     ``,

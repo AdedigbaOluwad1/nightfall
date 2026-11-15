@@ -6,6 +6,14 @@ moment we were tempted to step in. This is the honest version of the thing judge
 actually worry about: not "does the rehearsed demo work," but "what does it do
 when it meets something it wasn't tuned for."
 
+> **The most significant finding in this file was not found by us.** A true
+> non-builder, on a fresh clone with nothing but the README, caught the one thing
+> every other entry here missed: a `$0.00`, no-model run that still reported
+> "objective reached." It is written up last, under
+> [_The degraded run that still claimed the objective_](#the-degraded-run-that-still-claimed-the-objective--found-by-someone-who-didnt-build-it),
+> because it is the sharpest test of all — our own numbers, read by someone with no
+> stake in them.
+
 - **Target:** OWASP Mutillidae II (`citizenstig/nowasp`), a PHP 5.5.9 / Apache
   2.4.7 app. We had never run it or read its source. Chosen precisely because its
   stack is one Nightfall does **not** special-case (no Express banner to
@@ -433,3 +441,89 @@ honest in a second sense: its real injectable pages sit behind a bug-selection d
 the crawler doesn't drive, so they were never reached — a coverage gap, named, not a
 graceful miss. This is the **fifth** bug a cold/unseen target exposed by reading the
 agent's work, and the only one where the number that lied was a _finding_, not a zero.
+
+## The degraded run that still claimed the objective — found by someone who didn't build it
+
+Every bug above was found by the team re-reading its own numbers. This one wasn't. We
+handed the repo to a **true non-builder** — no stake in the result, no knowledge of the
+code — and asked them to follow the README cold on a fresh clone. They ran the flagship
+Juice Shop beat and it reported **3 findings, "objective reached."** Then they noticed
+what we never had: the run had spent **`$0.00`**, and the trace was full of
+`fallback: true`. The headline demo had reached its objective **without the model ever
+running**.
+
+> **Intervention point — the one we didn't catch ourselves.** Every other entry here is
+> about the _accuracy of a finding_. This is upstream of all of them: whether the
+> flagship claim is **AI-driven at all**. A reader who shrugs — "it still found three
+> things" — misses it. Our tester didn't. `$0.00` + `fallback: true` sitting next to
+> "objective reached" is precisely the juxtaposition that should scream and didn't. We
+> treated it as the single most serious reporting-honesty bug in the project, above even
+> the silent login, because it touches our own headline rather than a side capability.
+> **Date:** 2026-11-15.
+
+**Root cause — a legitimate design, dangerously unlabeled.** Nightfall is built so the
+model is an _optimizer over a deterministic floor_, never a single point of failure:
+`planner.ts` returns `undefined` when it can't decide and the loop runs the
+front-of-queue order; the flagship auth-bypass chain is seeded deterministically and
+"runs even when grounding is unavailable" (`agent.ts`). That floor is **general** — it is
+built from recon'd endpoints, not scripted to Juice Shop — and the hand-written probes,
+not the model, are what set `objectiveReached`. All of that is sound. The bug was what
+happened when the model wasn't merely _undecided_ but **unreachable**: an invalid or
+absent `BIFROST_API_KEY` makes `gateway.complete` throw a 401. `assertCanAfford` has
+already passed and `budget.add` is never reached, so **spend stays $0.00**; the throw is
+caught in both the planner and the hypothesis paths, neither is a `BudgetExceededError`,
+so each is swallowed into a silent fall back to the deterministic floor. The run then
+completes the scripted chain, reaches the objective, and writes a report whose only trace
+of any of this was a single `model spend: $0.0000` line — no banner, no flag, no halt.
+The `fallback: true` signal existed only in the per-decision `.audit.jsonl`, exactly
+where a cold reader scrolls past it. `RunState` carried no count of model calls at all,
+so nothing downstream could even ask "did the model run?" And the `run` command did no
+up-front key check — a missing key was a silent degrade, not an error.
+
+**Is it Juice-Shop-specific? No — and that cuts both ways.** It is generic resilience, so
+it is _not_ scripted Juice-Shop logic masquerading as an agent (the worse of the two
+possibilities). But because the floor runs on every lab, _any_ run with a broken key
+would have degraded the same way and looked identical to a grounded one. Nothing in the
+output distinguished the two.
+
+**The decision.** Should a degraded run ever be allowed to claim "objective reached"? We
+kept the deterministic floor — it is a real resilience property and its findings are real
+and replayable — but ruled that it may **never again be presented as the AI-driven
+result**. If the model is never reached, the run is now **degraded**, and that is stated
+unmissably, not inferred from a `$0.00`.
+
+**The fix (shipped, test-locked).**
+
+1. `RunState` now counts `modelCalls` (completed gateway calls, cache hits included) and
+   `modelErrors` (calls that threw a non-budget error). `isDegraded` = _a call was
+   attempted and every one missed_ (`modelCalls === 0 && modelErrors > 0`) — so a run
+   that simply never needed the model is **not** falsely flagged.
+2. `run.end` now carries `modelCalls` and `degraded`. The terminal summary prints the
+   model-call count and, on a degraded run, a red **`⚠ DEGRADED RUN`** banner spelling out
+   that findings are deterministic-only with no live grounding.
+3. The report renders a **`DEGRADED RUN — NO MODEL GROUNDING`** banner _above the
+   executive summary_, adds `model calls: N` to the run line, and softens the attack-chain
+   language so "objective reached" is never dressed as model reasoning on such a run.
+4. The CLI warns up front when `BIFROST_API_KEY` is unset, and the README now lists
+   prerequisites and states plainly that `.env.example` without real keys degrades rather
+   than errors.
+5. `loop.test.ts` locks that an unreachable model yields `degraded` + `modelCalls: 0` on
+   both the state and the `run.end` event while a real success does not; `report.test.ts`
+   locks that the banner appears above the summary on a degraded run and is absent on a
+   grounded one.
+
+**The honest result.** The finding _counts_ in the results table are unaffected —
+detection was always deterministic, so the model was never load-bearing for _whether_ a
+vulnerability is found. What a degraded run genuinely loses is the planning and the live
+CVE grounding — the Tavily story — and that loss is now impossible to miss instead of
+invisible. The standing rule for the submission follows directly: **the flagship beats
+must be run with real keys and show `model calls: N > 0` plus `tavily.cve` events** (the
+honest proof the model was load-bearing), or they are not the grounded result and must
+not be presented as one. Note that **spend is _not_ the signal**: a live-verified run on
+2026-11-15 against Juice Shop confirmed all three findings with 3 model calls and 4 live
+Tavily CVEs, yet reported `$0.00` — the gateway model was priced at zero (`NF_PRICING`
+override), and a run routed through a free/zero-priced model spends nothing while being
+fully AI-driven. Keying the check on spend would have falsely flagged it; keying it on
+`modelCalls` does not. This is the **sixth** bug a skeptical read exposed, the first found
+from outside the team, and the only one that touched not a number but the claim the whole
+system rests on.

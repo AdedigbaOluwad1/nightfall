@@ -32,6 +32,8 @@ export interface Payloads {
     findings: number;
     blocked: number;
     costUsd: number;
+    modelCalls: number;
+    degraded: boolean;
     haltedBy?: HaltReason;
   };
 }
@@ -67,6 +69,7 @@ export interface Receipts {
     steps: number;
     objectiveReached: boolean;
     haltedBy?: HaltReason;
+    degraded?: boolean;
     status: "idle" | "running" | "done";
   };
 }
@@ -133,6 +136,7 @@ export function reduceReceipts(prev: Receipts, item: TraceItem): Receipts {
       next.run.status = "done";
       next.run.haltedBy = p.haltedBy;
       next.run.findings = p.findings;
+      next.run.degraded = p.degraded;
       break;
     }
     default:
@@ -151,7 +155,11 @@ export function formatTrace(item: TraceItem): TraceLine {
   const p = item.payload as Record<string, unknown>;
   switch (item.type) {
     case "run.start":
-      return { tag: "run", tone: "bold", text: `run ${String(p.runId).slice(0, 8)} → ${p.target}` };
+      return {
+        tag: "run",
+        tone: "bold",
+        text: `run ${String(p.runId).slice(0, 8)} → ${p.target}`,
+      };
     case "scope.loaded":
       return {
         tag: "scope",
@@ -159,7 +167,11 @@ export function formatTrace(item: TraceItem): TraceLine {
         text: `${p.hosts} host(s), ${p.paths} path(s) · deny-by-default armed`,
       };
     case "scope.blocked":
-      return { tag: "scope", tone: "block", text: `blocked ${p.url} — ${p.reason}` };
+      return {
+        tag: "scope",
+        tone: "block",
+        text: `blocked ${p.url} — ${p.reason}`,
+      };
     case "recon.found":
       return {
         tag: "recon",
@@ -167,7 +179,11 @@ export function formatTrace(item: TraceItem): TraceLine {
         text: `${p.endpoint}${p.component ? ` · ${p.component} ${p.version ?? ""}` : ""}`,
       };
     case "tavily.cve":
-      return { tag: "tavily", tone: "tavily", text: `${p.component} ${p.version} → ${p.cve}` };
+      return {
+        tag: "tavily",
+        tone: "tavily",
+        text: `${p.component} ${p.version} → ${p.cve}`,
+      };
     case "hypothesis.failed":
       return {
         tag: "grounding",
@@ -181,7 +197,11 @@ export function formatTrace(item: TraceItem): TraceLine {
         text: `${p.candidates} candidate(s) · ${p.grounded ? "grounded" : "ungrounded"}`,
       };
     case "exploit.attempt":
-      return { tag: "exploit", tone: "exploit", text: `#${p.n} ${p.technique}` };
+      return {
+        tag: "exploit",
+        tone: "exploit",
+        text: `#${p.n} ${p.technique}`,
+      };
     case "exploit.interpret":
       return {
         tag: "decide",
@@ -201,9 +221,17 @@ export function formatTrace(item: TraceItem): TraceLine {
         text: `cap $${Number(p.capUsd).toFixed(2)} reached (spent $${Number(p.spentUsd).toFixed(4)}) · halting ${p.stage}`,
       };
     case "finding.confirmed":
-      return { tag: "finding", tone: "finding", text: `${p.title} · ${p.severity}` };
+      return {
+        tag: "finding",
+        tone: "finding",
+        text: `${p.title} · ${p.severity}`,
+      };
     case "objective.reached":
-      return { tag: "objective", tone: "ok", text: `reached via ${p.via} · ${p.steps} steps` };
+      return {
+        tag: "objective",
+        tone: "ok",
+        text: `reached via ${p.via} · ${p.steps} steps`,
+      };
     case "run.end":
       return {
         tag: "done",

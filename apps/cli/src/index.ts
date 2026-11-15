@@ -12,6 +12,7 @@ import {
   formatTiming,
   Gateway,
   groundedLookup,
+  isDegraded,
   loadScope,
   type PrecisionScore,
   precisionAtK,
@@ -59,6 +60,15 @@ function fromCwd(path: string): string {
   return resolve(process.env.INIT_CWD ?? process.cwd(), path);
 }
 
+function warnIfNoModelKey(): void {
+  if (process.env.BIFROST_API_KEY) return;
+  console.error(
+    `${pc.yellow("⚠ no BIFROST_API_KEY set")} — the run will proceed on the deterministic` +
+      ` probe floor with no model planning or live CVE grounding, and the report will be` +
+      ` marked DEGRADED. Set a real key for a grounded run.`,
+  );
+}
+
 interface GateProbe {
   label?: string;
   url: string;
@@ -76,11 +86,15 @@ program
   .option("--objective <text>", "override objective")
   .action(async (opts) => {
     attachRenderer();
+    warnIfNoModelKey();
     const scope = loadScope(fromCwd(opts.scope));
     const gate = new ScopeGate(scope);
     const gateway = new Gateway(new Budget(scope.budgetUsd));
     setHypothesisGateway(gateway);
-    bus.emit("scope.loaded", { hosts: scope.allow.hosts.length, paths: scope.allow.paths.length });
+    bus.emit("scope.loaded", {
+      hosts: scope.allow.hosts.length,
+      paths: scope.allow.paths.length,
+    });
 
     const evidencePath = process.env.NF_EVIDENCE_PATH ?? fromCwd("nightfall-findings.jsonl");
     const store = new EvidenceStore(evidencePath);
@@ -104,6 +118,8 @@ program
       scopeId: scopeId(scope),
       haltedBy: state.haltedBy,
       costUsd: state.costUsd,
+      modelCalls: state.modelCalls,
+      degraded: isDegraded(state),
     });
     const reportPath = `${evidencePath.replace(/\.jsonl$/, "")}.report.md`;
     writeFileSync(reportPath, report);
@@ -121,6 +137,7 @@ program
   .option("--port <n>", "WebSocket port", "4317")
   .action(async (opts) => {
     attachRenderer();
+    warnIfNoModelKey();
     const port = Number(opts.port);
     const wss = new WebSocketServer({ port });
     const backlog: string[] = [];
@@ -144,7 +161,10 @@ program
     const gate = new ScopeGate(scope);
     const gateway = new Gateway(new Budget(scope.budgetUsd));
     setHypothesisGateway(gateway);
-    bus.emit("scope.loaded", { hosts: scope.allow.hosts.length, paths: scope.allow.paths.length });
+    bus.emit("scope.loaded", {
+      hosts: scope.allow.hosts.length,
+      paths: scope.allow.paths.length,
+    });
 
     const evidencePath = process.env.NF_EVIDENCE_PATH ?? fromCwd("nightfall-findings.jsonl");
     const store = new EvidenceStore(evidencePath);
@@ -166,6 +186,8 @@ program
       scopeId: scopeId(scope),
       haltedBy: state.haltedBy,
       costUsd: state.costUsd,
+      modelCalls: state.modelCalls,
+      degraded: isDegraded(state),
     });
     writeFileSync(`${evidencePath.replace(/\.jsonl$/, "")}.report.md`, report);
     const breakdown = timeline.breakdown();
@@ -305,8 +327,14 @@ program
 
     const grounded = await groundedLookup(opts.component, opts.version);
     const ungrounded = await ungroundedLookup(opts.component, opts.version);
-    const pg = await precisionAtK(scope, gate, gateway, grounded, { k, repeats });
-    const pu = await precisionAtK(scope, gate, gateway, ungrounded, { k, repeats });
+    const pg = await precisionAtK(scope, gate, gateway, grounded, {
+      k,
+      repeats,
+    });
+    const pu = await precisionAtK(scope, gate, gateway, ungrounded, {
+      k,
+      repeats,
+    });
 
     const row = (label: string, s: PrecisionScore) =>
       label.padEnd(12) +
