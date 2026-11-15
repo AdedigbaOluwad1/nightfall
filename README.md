@@ -208,6 +208,34 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.
   cookies, and `generator` meta generically at the start; broadening the set of
   _mid-chain_ leak patterns is additive and named in [LIMITATIONS.md](./LIMITATIONS.md).
 
+## What the model does that the deterministic floor can't
+
+The detection floor is a fixed battery: every probe injects a **fixed** payload set
+(`' OR '1'='1`, `0/**/OR/**/1=1`, `../etc/passwd`, …). That makes it reliable and
+quota-free — but a server-side input filter that neutralizes those fixed payloads
+defeats it, however injectable the sink actually is. This is the one place model
+reasoning is **load-bearing for detection**, not just planning:
+
+- **Filter-bypass payload synthesis, confirmed by the app's own differential.** When a
+  SQLi probe draws no signal yet the parameter still visibly reacts to input, the loop
+  hands the model the filter's observed behaviour and asks for boolean-oracle bypass
+  pairs. The model's payloads are **never trusted on its word** — each is confirmed only
+  when its true-leg reproduces the application's own row-present fingerprint and its
+  false-leg suppresses it. A hallucinated payload that does not actually work yields no
+  finding, so this adds a capability with **zero false-positive surface** (`loop/actions.ts`,
+  `modelBypassConfirm`).
+- **Proven on a target the floor is blind to.** sqli-labs **Less-25a** is a numeric
+  **blind** SQLi (no error echoed) behind a filter that strips `or`/`and`. The fixed probes
+  fail both ways: the `'"` error probe raises no visible error, and `0 OR 1=1` is rewritten
+  to `0  1=1` (broken). The model reasoned out a **compound** bypass —
+  `0/**/oorr/**/1=1` (keyword-doubling survives one strip → `or`, inline comments stand in
+  for filtered spaces) — and the engine confirmed it against the app's true/false split.
+  The trace shows it as a distinct `ADAPT` step; the floor alone returns nothing here, and a
+  regression test locks both directions (`actions.test.ts`).
+- **It degrades honestly.** No model / a 429 → the smith returns nothing and the loop is
+  exactly the fixed floor again, so this never becomes a hidden dependency, and a
+  no-model run is still surfaced as DEGRADED rather than passing as AI-driven.
+
 How each Challenge 03 requirement is met is mapped in [NIGHTFALL.md](./NIGHTFALL.md).
 
 ## Results across labs
@@ -218,37 +246,37 @@ four surface types, with no code tuned to any target. Every finding is **control
 benign request — so the table carries no false positives, and the two zeros are reported
 with their specific cause, not a vague "gated".
 
-| Lab            | Stack         | Surface        | Auth           | Findings                                                                                             |
-| -------------- | ------------- | -------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
-| Mutillidae     | PHP           | HTML           | unauth         | **14** — 6 SQLi, 7 XSS, 1 LFI                                                                        |
-| DVWA           | PHP           | HTML form      | credentialed   | **5** — 2 SQLi, 2 XSS, 1 cmdi                                                                        |
-| DVNA           | Node/Express  | HTML form      | credentialed   | **4** — 2 SQLi, 1 cmdi, 1 XSS                                                                        |
-| Juice Shop     | Node/Express  | SPA + REST     | unauth → chain | **3** — SQLi, auth-bypass, BAC priv-esc                                                              |
-| DVGA           | Python        | GraphQL        | unauth         | **2** — SQLi, cmdi                                                                                   |
-| VAmPI          | Python/Flask  | REST (OpenAPI) | unauth         | **1** — SQLi (path param)                                                                            |
-| DSVW †         | Python        | query params   | unauth         | **1** — SQLi (`?id=`, numeric context)                                                               |
-| DVWS ‡         | Python/spyne  | SOAP / WSDL    | unauth         | **1** — SQLi (`findUsersByName`, boolean oracle over result elements)                                |
-| sqli-labs ‡    | PHP/MySQL     | query params   | unauth         | **2** — error-based SQLi on Less-1 (string) + Less-2 (numeric); representative sample, not all 65    |
-| Pikachu ‡      | PHP/MySQL     | HTML forms     | unauth         | **8** — 3 SQLi, 4 XSS, 1 OS command injection (all hand-verified; broad multi-class)                 |
-| XVWA ‡         | PHP/MySQL     | HTML forms     | unauth         | **3** — SQLi, OS command injection, LFI/path traversal (on the Cloudflare Llama backend)             |
-| WackoPicko ‡   | PHP/MySQL     | HTML forms     | unauth         | **2** — SQLi (login), reflected XSS; login SQLi recovered by a malformed-form recon fix              |
-| PyGoat ‡       | Python/Django | HTML form      | credentialed   | **2** — OS command injection, reflected XSS; shell-error→SQLi false positive found & fixed           |
-| OWASP Bricks ‡ | PHP/MySQL     | query + form   | unauth         | **3** — SQLi (login), 2 reflected XSS (content + login); content-brick error-based SQLi a named miss |
-| BodgeIt        | Java/JSP      | HTML           | unauth         | **1** — reflected XSS                                                                                |
-| bWAPP          | PHP           | HTML           | credentialed   | **0** — login succeeds; injectable pages sit behind a bug-selection form the crawler does not drive  |
-| WebGoat        | Java/Spring   | lesson SPA     | credentialed   | **0** — login succeeds; interactive lesson endpoints a flat crawler does not reach                   |
+| Lab            | Stack         | Surface        | Auth           | Findings                                                                                                                                                                      |
+| -------------- | ------------- | -------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mutillidae     | PHP           | HTML           | unauth         | **14** — 6 SQLi, 7 XSS, 1 LFI                                                                                                                                                 |
+| DVWA           | PHP           | HTML form      | credentialed   | **5** — 2 SQLi, 2 XSS, 1 cmdi                                                                                                                                                 |
+| DVNA           | Node/Express  | HTML form      | credentialed   | **4** — 2 SQLi, 1 cmdi, 1 XSS                                                                                                                                                 |
+| Juice Shop     | Node/Express  | SPA + REST     | unauth → chain | **3** — SQLi, auth-bypass, BAC priv-esc                                                                                                                                       |
+| DVGA           | Python        | GraphQL        | unauth         | **2** — SQLi, cmdi                                                                                                                                                            |
+| VAmPI          | Python/Flask  | REST (OpenAPI) | unauth         | **1** — SQLi (path param)                                                                                                                                                     |
+| DSVW †         | Python        | query params   | unauth         | **1** — SQLi (`?id=`, numeric context)                                                                                                                                        |
+| DVWS ‡         | Python/spyne  | SOAP / WSDL    | unauth         | **1** — SQLi (`findUsersByName`, boolean oracle over result elements)                                                                                                         |
+| sqli-labs ‡    | PHP/MySQL     | query params   | unauth         | **3** — error-based SQLi (Less-1 string, Less-2 numeric) + Less-25a blind SQLi behind an OR/AND filter, confirmed via a model-synthesized bypass the fixed floor cannot reach |
+| Pikachu ‡      | PHP/MySQL     | HTML forms     | unauth         | **8** — 3 SQLi, 4 XSS, 1 OS command injection (all hand-verified; broad multi-class)                                                                                          |
+| XVWA ‡         | PHP/MySQL     | HTML forms     | unauth         | **3** — SQLi, OS command injection, LFI/path traversal (on the Cloudflare Llama backend)                                                                                      |
+| WackoPicko ‡   | PHP/MySQL     | HTML forms     | unauth         | **2** — SQLi (login), reflected XSS; login SQLi recovered by a malformed-form recon fix                                                                                       |
+| PyGoat ‡       | Python/Django | HTML form      | credentialed   | **2** — OS command injection, reflected XSS; shell-error→SQLi false positive found & fixed                                                                                    |
+| OWASP Bricks ‡ | PHP/MySQL     | query + form   | unauth         | **3** — SQLi (login), 2 reflected XSS (content + login); content-brick error-based SQLi a named miss                                                                          |
+| BodgeIt        | Java/JSP      | HTML           | unauth         | **1** — reflected XSS                                                                                                                                                         |
+| bWAPP          | PHP           | HTML           | credentialed   | **0** — login succeeds; injectable pages sit behind a bug-selection form the crawler does not drive                                                                           |
+| WebGoat        | Java/Spring   | lesson SPA     | credentialed   | **0** — login succeeds; interactive lesson endpoints a flat crawler does not reach                                                                                            |
 
 > **⚠️ Submission record vs. post-submission expansion.** The submitted pitch deck is the
 > frozen system of record at **thirty findings across seven labs**, and is deliberately left
 > unchanged. Everything in the table marked **†** or **‡** is **post-submission** work (the
 > 2026-11-15 expansion pass and after) and is **not** part of the submitted numbers. The nine
 > unmarked rows above are the seven original labs (thirty findings) plus their two honest zeros,
-> as submitted; the eight marked rows carry the tally to **fifty-two / fifteen** here only. If a reviewer compares the
+> as submitted; the eight marked rows carry the tally to **fifty-three / fifteen** here only. If a reviewer compares the
 > deck to this repo, the deck's thirty / seven is authoritative for the submission; this README
 > tracks continued work past it.
 
 Submitted baseline: **thirty confirmed findings across seven labs** (unmarked rows).
-Post-submission total (this repo): **fifty-two findings across fifteen labs**, plus two honest
+Post-submission total (this repo): **fifty-three findings across fifteen labs**, plus two honest
 zeros — each a named, specific limitation, not a shared "gated" label.
 
 > † / ‡ **Post-submission additions.** **†** DSVW (numeric-context boolean oracle; see

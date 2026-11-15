@@ -921,3 +921,54 @@ in."_ (auth bypass); `username=nfx7q9<i>` → raw `<i>` reflected. login-1 = **2
 (login-1) — all hand-verified, on the Gemini flash-lite backend, not degraded. Residuals, named not
 claimed: content-1's error-based SQLi (a within-budget planner miss, class confirmed on login-1),
 and the remaining content/login/file-upload bricks (not run).
+
+## The model earning its place — a filter-bypass the fixed floor cannot reach
+
+Every prior finding in this document was, in the end, confirmed by the **deterministic
+floor** — a fixed battery of hand-written probes. The model chose _which_ technique to run
+next, but the detection itself used fixed payloads, and an honest reviewer could fairly ask:
+what does the LLM actually add to _detection_? This section is the answer, and it is the
+sharpest result in the file.
+
+**The gap.** The floor's SQLi probes inject a FIXED payload set (`' OR '1'='1`,
+`0/**/OR/**/1=1`, the quote probe `'"`). Any server-side input filter that neutralizes those
+defeats the floor — no matter how injectable the sink is. sqli-labs **Less-25a** is exactly
+that: a **numeric blind** SQLi (`WHERE id=$id`, no error echoed) behind
+`preg_replace('/or/i','')` + `/AND/i` — it strips `or`/`and`. Hand-verified, the fixed probes
+fail both ways: `?id=1'"` raises no visible error (blind), and `?id=0 OR 1=1` is rewritten to
+`?id=0  1=1` (broken) → the row-bearing "Login name" block never appears. The floor correctly
+returns nothing — an honest miss with a real cause.
+
+**The capability.** When a SQLi probe draws no signal **but the parameter still reacts to
+input** (a non-empty true/false fingerprint exists), the loop now hands the model the filter's
+observed behaviour and asks for boolean-oracle bypass _pairs_. The model supplies payloads; it
+does **not** get to declare a finding. Each pair is confirmed only when its true-leg reproduces
+the application's own row-present fingerprint and its false-leg suppresses it — the app's
+demonstrated differential, never the model's word (`modelBypassConfirm`, `loop/actions.ts`).
+
+> **Why this is honest, not a backdoor to false positives.** The model is a payload _source_;
+> the confirmation is the same benign-anchored differential every other finding uses. A
+> hallucinated payload that does not actually work produces no fingerprint split and is
+> discarded. A regression test locks both directions: the filtered sink is **missed** without
+> the smith and **confirmed** with it, and a smith whose "false" leg still returns the row is
+> **rejected** (`actions.test.ts`). The capability adds zero false-positive surface.
+
+**The live run.** Against Less-25a on the Gemini flash-lite backend, the agent emitted a
+distinct `ADAPT` trace step and confirmed the SQLi (critical) via a **compound** bypass the
+model reasoned out on its own:
+
+```
+└ ADAPT · model synthesized 6 filter-bypass payload(s) for 'id' — confirmed
+  model bypass true='0/**/oorr/**/1=1' reproduced the row fingerprint; false='0/**/oorr/**/1=2' suppressed it
+```
+
+`oorr` survives the single `/or/i` strip (→ `or`), and the `/**/` inline comments stand in for
+any filtered spaces — two evasions composed in one payload. The floor alone returns nothing on
+this endpoint; the model-synthesized payload, confirmed by the app's own behaviour, turns the
+miss into a critical finding. That is the LLM doing something the deterministic scanner
+provably cannot — with the no-false-positive discipline fully intact. It degrades honestly too:
+no model / a 429 → the smith returns nothing and the loop is exactly the fixed floor again.
+
+**sqli-labs total: 3 findings** — Less-1 (string, error-based), Less-2 (numeric, error-based),
+and Less-25a (blind, behind an OR/AND filter, model-synthesized bypass). The Less-25a run also
+reflected the `id` value un-escaped (an incidental reflected XSS), not separately counted.
