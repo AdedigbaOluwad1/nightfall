@@ -115,18 +115,23 @@ implicit state lives in the transport around it.
 
 States: `under → over → halted` (terminal).
 
-| from       | event                                     | to                                  | guard                                                                                                                                        |
-| ---------- | ----------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| under      | `spent < cap`                             | under                               | `assertUnder()` no-op; `overBudget()` returns false                                                                                          |
-| under      | `spent ≥ cap`                             | halted (break, `haltedBy="budget"`) | `overBudget()` before each step; `assertUnder()` throws `BudgetExceededError` the loop catches                                               |
-| **halted** | **un-halt / keep spending**               | **ILLEGAL**                         | not reachable: the throw/`overBudget` both `break` the `while`; `budgetAnnounced` latch emits the halt once; nothing after the break spends. |
-| under      | two calls both pass check then both spend | **ILLEGAL (overrun by racing)**     | not reachable — sequential; no two model calls are ever in flight.                                                                           |
+| from       | event                                     | to                                  | guard                                                                                                                                                                             |
+| ---------- | ----------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| under      | next call's worst-case still fits         | under                               | `assertCanAfford(est)` admits it _before_ issuing; `overBudget()` returns false                                                                                                   |
+| under      | next call's worst-case would reach cap    | halted (break, `haltedBy="budget"`) | `assertCanAfford(est)` throws `BudgetExceededError` **before the call is issued** (the loop catches it and `break`s); `overBudget()` also `break`s if `spent ≥ cap` before a step |
+| **halted** | **un-halt / keep spending**               | **ILLEGAL**                         | not reachable: the throw/`overBudget` both `break` the `while`; `budgetAnnounced` latch emits the halt once; nothing after the break spends.                                      |
+| under      | two calls both pass check then both spend | **ILLEGAL (overrun by racing)**     | not reachable — sequential; no two model calls are ever in flight.                                                                                                                |
 
-- **Honest limitation — soft cap:** `assertUnder()` is checked _before_ a call and
-  `add()` runs _after_ it, so a single in-flight call can overshoot the cap by up
-  to that one call's cost (e.g. pass at \$4.99, land at \$5.49). This is a soft
-  cap, by design — it never _racing_-overshoots (sequential), and the overshoot is
-  bounded by one call. A hard cap would require pre-charging an estimate.
+- **Hard pre-flight cap — overshoot \$0.00:** `assertCanAfford(est)` reserves each
+  call's _worst-case_ cost (prompt tokens + a full `max_tokens` completion, priced
+  from the sync catalog) and refuses the call if that reservation would reach the
+  cap — _before_ the request is issued; `add()` records only actual spend
+  afterward. So the call that would cross the line is never made and the overshoot
+  is exactly **\$0.00** (not bounded-by-one-call). Sequential execution rules out a
+  racing overshoot too. A free/local model (`est ≤ 0`) degrades to the plain
+  post-hoc `assertUnder` check. _(An earlier draft described this as a soft cap that
+  could overshoot by one in-flight call; that predates the reserve check and is no
+  longer true.)_
 
 ## 6. Evidence store (implicit) — `evidence/store.ts`
 
@@ -139,23 +144,23 @@ States: `under → over → halted` (terminal).
 
 ## Pressure-test scorecard (the critique's named bets)
 
-| claim                                             | verdict                                                                                                    | class               |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------- |
-| redirect in-scope→out-of-scope leak (TOCTOU)      | **handled** — manual re-gate per hop + test                                                                | scope-leak (closed) |
-| concurrent login corrupts CSRF                    | **not reachable + CI-enforced** — sequential; `concurrency-guard.test.ts`                                  | —                   |
-| concurrent budget check-then-spend overrun        | **not reachable + CI-enforced** — sequential                                                               | —                   |
-| library-driven reentrancy (Playwright/cookie jar) | **not present** — no `page.on(...)`; jar mutated within the awaited fetch                                  | —                   |
-| unbounded retry                                   | **bounded in code** — `maxRetries`                                                                         | —                   |
-| hung request stalls the loop (no time bound)      | **closed** — per-request `AbortController` timeout; browser 10s waits                                      | reliability (fixed) |
-| act after objective reached                       | **not reachable** — set flag + `break`, sequential                                                         | —                   |
-| double evidence write on retry                    | **not possible** — record only on `ok` + `continue`                                                        | —                   |
-| crash mid-evidence-write silently drops a finding | **closed** — skipped lines counted + `console.warn`; disclosed, not hidden                                 | reliability (fixed) |
-| session expiry read as a finding                  | **guarded** — auth-wall (401/403 or login-screen) rejection; conservative heuristic + both-direction tests | reliability (fixed) |
-| auth-wall guard too aggressive (false negative)   | **guarded** — needs password field AND login affordance; lone password field still confirms                | reliability (fixed) |
-| SSRF / rebind to metadata/private IP              | **blocked** — deny-by-default refuses unlisted + IP-literal hosts                                          | scope-leak (closed) |
-| DNS TOCTOU on an allowed hostname                 | **narrow residual** — needs control of the authorized host's DNS; isolated-lab scope                       | documented          |
-| SPA 200-shell client-redirect to login            | **residual** — HTTP-tier body check can miss it; covered by Tier-2 browser                                 | documented          |
-| soft budget cap overshoot                         | **documented** — bounded by one call, by design                                                            | documented          |
+| claim                                             | verdict                                                                                                              | class               |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| redirect in-scope→out-of-scope leak (TOCTOU)      | **handled** — manual re-gate per hop + test                                                                          | scope-leak (closed) |
+| concurrent login corrupts CSRF                    | **not reachable + CI-enforced** — sequential; `concurrency-guard.test.ts`                                            | —                   |
+| concurrent budget check-then-spend overrun        | **not reachable + CI-enforced** — sequential                                                                         | —                   |
+| library-driven reentrancy (Playwright/cookie jar) | **not present** — no `page.on(...)`; jar mutated within the awaited fetch                                            | —                   |
+| unbounded retry                                   | **bounded in code** — `maxRetries`                                                                                   | —                   |
+| hung request stalls the loop (no time bound)      | **closed** — per-request `AbortController` timeout; browser 10s waits                                                | reliability (fixed) |
+| act after objective reached                       | **not reachable** — set flag + `break`, sequential                                                                   | —                   |
+| double evidence write on retry                    | **not possible** — record only on `ok` + `continue`                                                                  | —                   |
+| crash mid-evidence-write silently drops a finding | **closed** — skipped lines counted + `console.warn`; disclosed, not hidden                                           | reliability (fixed) |
+| session expiry read as a finding                  | **guarded** — auth-wall (401/403 or login-screen) rejection; conservative heuristic + both-direction tests           | reliability (fixed) |
+| auth-wall guard too aggressive (false negative)   | **guarded** — needs password field AND login affordance; lone password field still confirms                          | reliability (fixed) |
+| SSRF / rebind to metadata/private IP              | **blocked** — deny-by-default refuses unlisted + IP-literal hosts                                                    | scope-leak (closed) |
+| DNS TOCTOU on an allowed hostname                 | **narrow residual** — needs control of the authorized host's DNS; isolated-lab scope                                 | documented          |
+| SPA 200-shell client-redirect to login            | **residual** — HTTP-tier body check can miss it; covered by Tier-2 browser                                           | documented          |
+| budget cap overshoot (formerly a soft cap)        | **closed** — worst-case reserved pre-flight (`assertCanAfford`); the crossing call is never issued, overshoot \$0.00 | reliability (fixed) |
 
 Update this file in the same PR as any change to the machines above. It is **not
 frozen**: it is re-run against whatever the cold dry-run (days 13–15) actually
