@@ -139,16 +139,17 @@ or document/literal services that do not name the request wrapper after the oper
 still out of scope — additive from here.
 
 **Two residuals the DSVW cold run surfaced — both now closed.**
+
 - **GET-payload `+` encoding on raw-query apps → `%20` (fixed).** `withParam` serialized a
   GET value's spaces to `+`. Form-decoding stacks (PHP, Express) turn `+` back into a
-  space, so the string payloads worked; an app with a *raw* query parser (Python's
+  space, so the string payloads worked; an app with a _raw_ query parser (Python's
   `http.server`, as in DSVW) does not, so `' OR '1'='1` arrived as `'+OR+'1'='1` and
   misfired. `withParam` now emits `%20` for spaces in the serialized query — decoded to a
   space by every parser, accepted identically by the form stacks, so it is transparent to
   every lab already validated and correct on the raw-query ones. A regression test asserts
   no probe URL carries a `+` separator (`actions.test.ts`).
 - **Finding de-duplication (fixed).** Findings are now de-duplicated by weakness class +
-  endpoint scope (host + path + the sorted set of parameter *keys*, never payload values),
+  endpoint scope (host + path + the sorted set of parameter _keys_, never payload values),
   so the same injectable parameter reached through several discovered URL variants (DSVW
   lists example-payload links to its own `?id=` sink) is recorded once, while two genuinely
   different parameters on one path stay distinct. It under-merges rather than ever hides a
@@ -163,7 +164,7 @@ still out of scope — additive from here.
   names the same benign, world-readable file (read-only). The XVWA LFI confirmed on the re-run,
   and a regression test locks that a leak only at depth ≥ 6 (or absolute) is caught while a
   never-leaking include is not (`actions.test.ts`). Residual: a sink that leaks only a
-  *non*-`/etc/passwd` file, or needs a null-byte/wrapper trick, is still out of scope.
+  _non_-`/etc/passwd` file, or needs a null-byte/wrapper trick, is still out of scope.
 - **Malformed-form field recovery (fixed; surfaced by the WackoPicko cold run).** A form whose
   inputs are wrapped in `<tr>`/`<td>` with no enclosing `<table>` (WackoPicko's login, and a
   common legacy-PHP pattern) is emptied by HTML5 foster-parenting — the inputs are hoisted out
@@ -171,12 +172,12 @@ still out of scope — additive from here.
   goes invisible (the probe degrades to a GET `?q=`). `recon` now falls back to a raw
   form-region scan when the parse tree yields an empty form, recovering the named controls; the
   WackoPicko login SQLi confirmed once its `username` field was restored. A regression test
-  locks the recovery (`recon-routing.test.ts`). Residual: a form split across *multiple*
+  locks the recovery (`recon-routing.test.ts`). Residual: a form split across _multiple_
   mis-nested regions, or fields injected by client-side JS after load, still needs the Tier-2
   browser session.
 - **Shell error misread as error-based SQLi (fixed; surfaced by the PyGoat cold run).** A POSIX
   shell prints `/bin/sh: 1: Syntax error: Unterminated quoted string` on an unbalanced quote, and
-  the phrase *"unterminated quoted string"* is also a `SQL_ERROR` alternative. At an OS-command-
+  the phrase _"unterminated quoted string"_ is also a `SQL_ERROR` alternative. At an OS-command-
   injection sink (PyGoat's `/cmd_lab` shells out `dig {domain}`), the error-based SQLi quote probe
   therefore tripped the SQL signature — benign-control differential and all — and confirmed a
   phantom SQL injection on a page that runs no SQL. A `SHELL_ERROR` guard (`/bin/sh:`, `sh: <n>:`,

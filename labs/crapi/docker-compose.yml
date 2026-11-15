@@ -11,7 +11,6 @@
 # limitations under the License.
 
 services:
-
   crapi-identity:
     container_name: crapi-identity
     image: crapi/crapi-identity:${VERSION:-latest}
@@ -63,7 +62,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.8'
+          cpus: "0.8"
           memory: 384M
 
   crapi-community:
@@ -103,7 +102,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.3'
+          cpus: "0.3"
           memory: 192M
 
   crapi-workshop:
@@ -155,7 +154,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
+          cpus: "1.0"
           memory: 512M
 
   crapi-chatbot:
@@ -252,12 +251,12 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.3'
+          cpus: "0.3"
           memory: 128M
 
   postgresdb:
     container_name: postgresdb
-    image: 'postgres:14'
+    image: "postgres:14"
     command: ["postgres", "-c", "max_connections=500"]
     environment:
       POSTGRES_USER: admin
@@ -266,7 +265,7 @@ services:
     #ports:
     #  - "${LISTEN_IP:-127.0.0.1}:5432:5432"
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready" ]
+      test: ["CMD-SHELL", "pg_isready"]
       interval: 15s
       timeout: 15s
       retries: 15
@@ -275,12 +274,12 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: "0.5"
           memory: 256M
 
   mongodb:
     container_name: mongodb
-    image: 'mongo:4.4'
+    image: "mongo:4.4"
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: crapisecretpassword
@@ -297,16 +296,16 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.3'
+          cpus: "0.3"
           memory: 128M
 
   chromadb:
     container_name: chromadb
-    image: 'chromadb/chroma:latest'
+    image: "chromadb/chroma:latest"
     environment:
-      IS_PERSISTENT: 'TRUE'
+      IS_PERSISTENT: "TRUE"
     healthcheck:
-      test: [ "CMD", "/bin/bash", "-c", "cat < /dev/null > /dev/tcp/localhost/8000" ]
+      test: ["CMD", "/bin/bash", "-c", "cat < /dev/null > /dev/tcp/localhost/8000"]
       interval: 15s
       timeout: 15s
       retries: 15
@@ -327,14 +326,14 @@ services:
       #  - "127.0.0.1:1025:1025" # smtp server
       - "${LISTEN_IP:-127.0.0.1}:8025:8025" # Mail ui
     healthcheck:
-      test: [ "CMD", "nc", "-z", "localhost", "8025" ]
+      test: ["CMD", "nc", "-z", "localhost", "8025"]
       interval: 15s
       timeout: 15s
       retries: 15
     deploy:
       resources:
         limits:
-          cpus: '0.3'
+          cpus: "0.3"
           memory: 128M
 
   api.mypremiumdealership.com:
@@ -351,7 +350,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
+          cpus: "0.1"
           memory: 50M
 
 volumes:
