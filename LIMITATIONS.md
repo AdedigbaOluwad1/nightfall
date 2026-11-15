@@ -99,12 +99,100 @@ does not depend on the lab being disposable. Two such additions:
   Validated against DVGA: 0 discovered endpoints → 8 Query-field probes → two real
   criticals, error-based SQLi on `pastes(filter)` and command injection on
   `systemDebug(arg)`, with no code tuned to DVGA.
+- **Numeric-context SQL injection.** The SQLi battery was string-context only (a
+  quote-pair error probe and a `' OR '1'='1` boolean oracle). An **unquoted numeric**
+  sink (`WHERE id=<value>`) defeats both — the quote probe's leaked error appears under
+  a benign value too (an alphanumeric control is itself an invalid column reference), so
+  the benign-control differential correctly suppresses it; and the string boolean payloads
+  only error. A numeric boolean oracle now probes each field with `0 OR 1=1` (every row)
+  vs `0 AND 1=1` (none) and confirms on a row differential — the same impact basis as the
+  string oracle, immune to the menu-name false positive, and read-only (SELECT-side). The
+  payload's spaces are written as `/**/` inline comments so a raw query parser that does
+  not decode `+`→space cannot mangle them. Validated against DSVW (Python, numeric sqlite
+  sink): a cold run that found 0 now confirms the real critical SQLi on `?id=`, with no
+  code tuned to DSVW. See COLD_RUN.md.
 
 **Still outside the set (named, not hidden).** **JSON/body injection on POST/PUT/
 DELETE** is not yet probed: those verbs are state-changing, so the read-only line
 holds until a reviewed body-injection increment lands. (A GraphQL _mutation_ is in
 this same category and is deliberately never enumerated.) This is additive to the
 same closed `switch`, not a flag flip.
+
+**SOAP / WSDL — now covered (XML-RPC still a blind spot).** The SOAP gap flagged in the
+2026-11-15 expansion pass is closed. Recon probes the conventional WSDL locations
+(`/?wsdl`, `/service?wsdl`, …); when a WSDL answers it parses the target namespace, the
+service address, each operation's SOAPAction, and the operations' string parameters, and
+emits one injectable endpoint per (read-like operation, string parameter). The injection
+battery grows a SOAP branch: it builds a SOAP 1.1 envelope placing the payload at the
+target parameter (XML-escaped, so the envelope stays well-formed and the parser hands the
+raw metacharacter to the sink) with siblings at benign defaults, and confirms SQLi by the
+**boolean oracle counting repeated result elements** — a spyne/.NET/JAX-WS service hides the
+engine error behind a generic SOAP fault, so error-based never fires and the row-count
+differential (`' OR '1'='1` → N result elements vs `' AND '1'='2` → 0) is the confirmation
+path. Read-only by construction: an allow-list of read-like operation names (get/find/
+search/list/read/…) with a state-changing-verb deny check, mirroring the GraphQL Query-only
+guard. Validated live against a spyne WSDL service (operation `findUsersByName`, raw-concat
+SQLi): recon discovered the probe and the oracle confirmed 3 result rows vs 0 (see
+[COLD_RUN.md](./COLD_RUN.md#dvws-soap--from-blind-spot-to-confirmed-capability)).
+Residual: **XML-RPC** (and SOAP operations whose only injectable input is a non-string type,
+or document/literal services that do not name the request wrapper after the operation) are
+still out of scope — additive from here.
+
+**Two residuals the DSVW cold run surfaced — both now closed.**
+- **GET-payload `+` encoding on raw-query apps → `%20` (fixed).** `withParam` serialized a
+  GET value's spaces to `+`. Form-decoding stacks (PHP, Express) turn `+` back into a
+  space, so the string payloads worked; an app with a *raw* query parser (Python's
+  `http.server`, as in DSVW) does not, so `' OR '1'='1` arrived as `'+OR+'1'='1` and
+  misfired. `withParam` now emits `%20` for spaces in the serialized query — decoded to a
+  space by every parser, accepted identically by the form stacks, so it is transparent to
+  every lab already validated and correct on the raw-query ones. A regression test asserts
+  no probe URL carries a `+` separator (`actions.test.ts`).
+- **Finding de-duplication (fixed).** Findings are now de-duplicated by weakness class +
+  endpoint scope (host + path + the sorted set of parameter *keys*, never payload values),
+  so the same injectable parameter reached through several discovered URL variants (DSVW
+  lists example-payload links to its own `?id=` sink) is recorded once, while two genuinely
+  different parameters on one path stay distinct. It under-merges rather than ever hides a
+  finding. DSVW's cold run went from 4 emitted findings for one bug to a correct **1**; a
+  regression test locks both directions (`loop.test.ts`).
+- **Path-traversal probe depth (fixed; surfaced by the XVWA cold run).** The traversal probe
+  sent a single fixed `../../../../etc/passwd` (four levels). A file-inclusion endpoint nested
+  deep below the web root (XVWA's is six levels down) is never climbed out of by four dots, so a
+  real, trivially-readable `/etc/passwd` leak read as a clean negative — the agent honestly
+  abandoned it rather than fabricate. `pathTraversalCheck` now probes an absolute path plus a
+  range of depths (3/5/7/10 `../`); excess `../` collapses at the root, and every payload still
+  names the same benign, world-readable file (read-only). The XVWA LFI confirmed on the re-run,
+  and a regression test locks that a leak only at depth ≥ 6 (or absolute) is caught while a
+  never-leaking include is not (`actions.test.ts`). Residual: a sink that leaks only a
+  *non*-`/etc/passwd` file, or needs a null-byte/wrapper trick, is still out of scope.
+- **Malformed-form field recovery (fixed; surfaced by the WackoPicko cold run).** A form whose
+  inputs are wrapped in `<tr>`/`<td>` with no enclosing `<table>` (WackoPicko's login, and a
+  common legacy-PHP pattern) is emptied by HTML5 foster-parenting — the inputs are hoisted out
+  of the `<form>`, so cheerio reports no fields and the form's entire POST injection surface
+  goes invisible (the probe degrades to a GET `?q=`). `recon` now falls back to a raw
+  form-region scan when the parse tree yields an empty form, recovering the named controls; the
+  WackoPicko login SQLi confirmed once its `username` field was restored. A regression test
+  locks the recovery (`recon-routing.test.ts`). Residual: a form split across *multiple*
+  mis-nested regions, or fields injected by client-side JS after load, still needs the Tier-2
+  browser session.
+- **Shell error misread as error-based SQLi (fixed; surfaced by the PyGoat cold run).** A POSIX
+  shell prints `/bin/sh: 1: Syntax error: Unterminated quoted string` on an unbalanced quote, and
+  the phrase *"unterminated quoted string"* is also a `SQL_ERROR` alternative. At an OS-command-
+  injection sink (PyGoat's `/cmd_lab` shells out `dig {domain}`), the error-based SQLi quote probe
+  therefore tripped the SQL signature — benign-control differential and all — and confirmed a
+  phantom SQL injection on a page that runs no SQL. A `SHELL_ERROR` guard (`/bin/sh:`, `sh: <n>:`,
+  `command not found`, … — text no DB driver emits) now withholds the SQLi signal when the matched
+  error is shell-produced; the (real) command-injection finding is unaffected. A regression test
+  locks it (`actions.test.ts`). General hardening for every `nslookup`/`ping`/`dig` shell-out sink.
+- **Injection sinks on password-type inputs are not probed (residual; surfaced by the PyGoat cold
+  run).** Recon excludes `password`-type inputs from injectable sinks by design — injecting a
+  password field causes account lockouts and login noise, and it is almost never a real sink.
+  PyGoat's `/sql_lab` is the rare exception: it concatenates the **password** field raw into its
+  query, behind an ORM-safe gate (`login.objects.filter(user=name)`) that first requires the
+  **username** to match a seeded row. So the one injectable sink (`pass`) is skipped, and the one
+  probed field (`name`) is gated and yields no differential — the SQLi is a true, hand-verified
+  miss. This is left **unpatched**: broadening injection to password fields trades one buried
+  finding for lockouts and false positives across every normal login. Recorded as a known miss,
+  not counted. The run's capability was otherwise proven (same style confirmed CMDi and XSS).
 
 ## 4. Authenticated broken-access-control confirmation is bounded by surface discovery
 

@@ -157,9 +157,22 @@ pnpm --filter @nightfall/cli dev -- ablate --targets apps/cli/reference.targets.
 - **A budget cap that halts a runaway loop.** Spend accumulates against the scope's
   `budgetUsd`; crossing it raises a typed `BudgetExceededError` the loop catches and
   halts on (`halted: budget`) — proven live, not a mocked check.
-- **Model-tier routing + cache.** `NF_MODEL_CHEAP`/`STRONG`/`WRITE` route per step
-  through one gateway; the client reads the `x-bifrost-cache-hit` header so a repeated
-  call is served at $0.
+- **Per-role, multi-provider model routing + cache.** The gateway maps three step roles to
+  three independently-configured models — `NF_MODEL_CHEAP` (classification), `NF_MODEL_STRONG`
+  (exploit reasoning), `NF_MODEL_WRITE` (report) — and **each role can name a different model
+  on a different provider**, all behind the one Bifrost endpoint, swappable without touching
+  code (`modelForStep` in `gateway/routing.ts`). `.env.example` ships ready-to-use configs for
+  Gemini, Cloudflare Workers AI **Llama 3.3 70B** (`cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast`),
+  local Ollama, and the flagship, and any role can point at any of them.
+  **Honest scope of what runs today:** the loop's model calls all go through the `exploit_reason`
+  role (the planner and the Tavily-grounded hypothesis step); **classification and report
+  generation are deterministic and make no model call**, so the `CHEAP` and `WRITE` roles are
+  wired and ready but currently idle. The practical lever is therefore `NF_MODEL_STRONG`: point
+  it at Cloudflare Llama and the whole run's model load moves off the Gemini quota onto the
+  Cloudflare neuron budget — verified on the XVWA cold run (41/41 calls on Llama 3.3 70B, 0 on
+  Gemini, no 429, two findings). Each call is tagged on the `gateway.call` event with the exact
+  model that served it, so the backend split is observable, not asserted; the client reads the
+  `x-bifrost-cache-hit` header so a repeated call is served at $0.
 
 ## What Tavily does (and the bare model can't)
 
@@ -201,17 +214,71 @@ with their specific cause, not a vague "gated".
 | Juice Shop | Node/Express | SPA + REST     | unauth → chain | **3** — SQLi, auth-bypass, BAC priv-esc                                                             |
 | DVGA       | Python       | GraphQL        | unauth         | **2** — SQLi, cmdi                                                                                  |
 | VAmPI      | Python/Flask | REST (OpenAPI) | unauth         | **1** — SQLi (path param)                                                                           |
+| DSVW †     | Python       | query params   | unauth         | **1** — SQLi (`?id=`, numeric context)                                                              |
+| DVWS ‡     | Python/spyne | SOAP / WSDL    | unauth         | **1** — SQLi (`findUsersByName`, boolean oracle over result elements)                               |
+| sqli-labs ‡| PHP/MySQL    | query params   | unauth         | **2** — error-based SQLi on Less-1 (string) + Less-2 (numeric); representative sample, not all 65   |
+| Pikachu ‡  | PHP/MySQL    | HTML forms     | unauth         | **8** — 3 SQLi, 4 XSS, 1 OS command injection (all hand-verified; broad multi-class)                |
+| XVWA ‡     | PHP/MySQL    | HTML forms     | unauth         | **3** — SQLi, OS command injection, LFI/path traversal (on the Cloudflare Llama backend)            |
+| WackoPicko ‡| PHP/MySQL   | HTML forms     | unauth         | **2** — SQLi (login), reflected XSS; login SQLi recovered by a malformed-form recon fix             |
+| PyGoat ‡   | Python/Django| HTML form      | credentialed   | **2** — OS command injection, reflected XSS; shell-error→SQLi false positive found & fixed          |
+| OWASP Bricks ‡| PHP/MySQL | query + form   | unauth         | **3** — SQLi (login), 2 reflected XSS (content + login); content-brick error-based SQLi a named miss |
 | BodgeIt    | Java/JSP     | HTML           | unauth         | **1** — reflected XSS                                                                               |
 | bWAPP      | PHP          | HTML           | credentialed   | **0** — login succeeds; injectable pages sit behind a bug-selection form the crawler does not drive |
 | WebGoat    | Java/Spring  | lesson SPA     | credentialed   | **0** — login succeeds; interactive lesson endpoints a flat crawler does not reach                  |
 
-Thirty confirmed findings across seven labs, plus two honest zeros — each a named,
-specific limitation, not a shared "gated" label. The per-lab narrative — including the
-one login-flow bug that once hid behind three of these labs, the nav-menu
-false-positive class since removed from the SQLi detector, and how DVGA went from a
-named "no GraphQL support" gap to two findings once introspection-driven GraphQL
-probing [shipped](./COLD_RUN.md#api-surface--rest-discovery-and-the-graphql-frontier) —
-is in [COLD_RUN.md](./COLD_RUN.md).
+> **⚠️ Submission record vs. post-submission expansion.** The submitted pitch deck is the
+> frozen system of record at **thirty findings across seven labs**, and is deliberately left
+> unchanged. Everything in the table marked **†** or **‡** is **post-submission** work (the
+> 2026-11-15 expansion pass and after) and is **not** part of the submitted numbers. The nine
+> unmarked rows above are the seven original labs (thirty findings) plus their two honest zeros,
+> as submitted; the eight marked rows carry the tally to **fifty-two / fifteen** here only. If a reviewer compares the
+> deck to this repo, the deck's thirty / seven is authoritative for the submission; this README
+> tracks continued work past it.
+
+Submitted baseline: **thirty confirmed findings across seven labs** (unmarked rows).
+Post-submission total (this repo): **fifty-two findings across fifteen labs**, plus two honest
+zeros — each a named, specific limitation, not a shared "gated" label.
+
+> † / ‡ **Post-submission additions.** **†** DSVW (numeric-context boolean oracle; see
+> [COLD_RUN.md](./COLD_RUN.md#dsvw--the-minimal-chrome-edge-case-and-a-numeric-context-blind-spot)).
+> **‡** DVWS (SOAP/WSDL), sqli-labs, and Pikachu, added after submission. All are genuine
+> cold-run, hand-verified findings — they simply postdate the deck, so they are tracked here and
+> kept out of the submitted count. The per-lab narrative — including the one login-flow bug that
+> once hid behind three of these labs, the nav-menu false-positive class since removed from the
+> SQLi detector, and how DVGA went from a named "no GraphQL support" gap to two findings once
+> introspection-driven GraphQL
+> probing [shipped](./COLD_RUN.md#api-surface--rest-discovery-and-the-graphql-frontier) —
+> is in [COLD_RUN.md](./COLD_RUN.md).
+
+> ‡ **DVWS (SOAP / WSDL) — blind spot closed and counted.** The same pass turned the named
+> SOAP/WSDL blind spot into a working capability: recon now discovers a WSDL, enumerates its
+> read-like operations' string parameters, and the battery confirms SQLi over a SOAP envelope
+> by counting repeated result elements (the engine error hides behind a generic SOAP fault, so
+> the boolean oracle is the confirmation path). Unlike the other rows it was validated against
+> a **purpose-built spyne WSDL fixture** (a genuine raw-concat SOAP SQLi), not an off-the-shelf
+> community image — the public WSDL-based DVWS ships no clean container. The finding is real
+> and live-confirmed, so it is counted, with this provenance stated plainly. Detail:
+> [COLD_RUN.md](./COLD_RUN.md#dvws-soap--from-blind-spot-to-confirmed-capability),
+> [LIMITATIONS.md](./LIMITATIONS.md).
+
+> ‡ **sqli-labs — cold runs on a canonical public benchmark, counted conservatively.** The
+> same pass added `acgpiano/sqli-labs` (the 65-lesson SQLi training app), run cold on two
+> representative lessons: Less-1 (string) and Less-2 (numeric), both confirmed as error-based
+> SQLi (22 model calls each, not degraded). Because the app is by construction 65 near-identical
+> SQLi challenges, only the representative string + numeric pair is counted — running all 65
+> would inflate the tally meaninglessly. These are error-based disclosures, not a numeric-oracle
+> showcase (that remains DSVW's). Detail:
+> [COLD_RUN.md](./COLD_RUN.md#sqli-labs--cold-runs-on-a-canonical-public-sqli-benchmark).
+
+> ‡ **Pikachu — the broad-class run.** `area39/pikachu` (multi-class PHP/MySQL) is the first
+> expansion target exercising SQLi **and** XSS **and** OS command injection together: a root
+> crawl confirmed 7 (3 SQLi, 4 reflected XSS) and a scoped RCE run impact-confirmed command
+> injection at `rce_ping.php` (`; id` output, benign-control differential, read-only) — 8 in
+> all, **every one hand-verified** before counting (SQLi leaks the parser error, XSS reflects a
+> raw marker un-escaped, cmdi returns live `id` output). The agent honestly abandoned two
+> hallucinated-CVE escalations with "no command output observed." Residual classes (PHP-eval,
+> file inclusion, SSRF, upload, CSRF) are named, not claimed. Detail:
+> [COLD_RUN.md](./COLD_RUN.md#pikachu--a-broad-class-cold-run-sqli--xss--command-injection).
 
 ## Layout
 
