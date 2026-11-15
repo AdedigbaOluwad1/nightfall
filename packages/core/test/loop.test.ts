@@ -82,6 +82,70 @@ describe("runLoop — the decide/recover loop", () => {
     expect(call).toBe(2); // failed once, then succeeded
   });
 
+  it("records one finding when the same parameter is confirmed via several URL variants", async () => {
+    // DSVW lists example-payload links to its own ?id= sink, so recon discovers
+    // several URL variants of one injectable parameter. Each confirms, but they
+    // are one vulnerability — the run must report it once, not once per variant.
+    const wide = ScopeFile.parse({
+      target: "http://localhost:3000/",
+      objective: "Reach the admin dashboard",
+      allow: { hosts: ["localhost"], paths: ["/"] },
+      maxSteps: 40,
+      budgetUsd: 0.01,
+    });
+    const wideGate = new ScopeGate(wide);
+    const sqliOnly = async (_s: Session, technique: string) =>
+      technique === "SQL Injection"
+        ? { ok: true as const, note: "sqli", applicable: true }
+        : { ok: false as const, note: "n/a", applicable: true };
+
+    const findings: Finding[] = [];
+    await runLoop(
+      wide,
+      wideGate,
+      gateway,
+      baseDeps({
+        recon: async () => ({
+          fingerprints: [],
+          endpoints: [
+            { url: "http://localhost:3000/?id=2", method: "GET", hasParams: true },
+            {
+              url: "http://localhost:3000/?id=2%20UNION%20SELECT%201",
+              method: "GET",
+              hasParams: true,
+            },
+            { url: "http://localhost:3000/?id=(SELECT%201)", method: "GET", hasParams: true },
+          ],
+        }),
+        attempt: sqliOnly,
+        record: (f) => findings.push(f),
+      }),
+    );
+    await flush();
+    expect(findings).toHaveLength(1);
+
+    // A genuinely different parameter on the same path is still its own finding.
+    const findings2: Finding[] = [];
+    await runLoop(
+      wide,
+      wideGate,
+      gateway,
+      baseDeps({
+        recon: async () => ({
+          fingerprints: [],
+          endpoints: [
+            { url: "http://localhost:3000/?id=2", method: "GET", hasParams: true },
+            { url: "http://localhost:3000/?name=x", method: "GET", hasParams: true },
+          ],
+        }),
+        attempt: sqliOnly,
+        record: (f) => findings2.push(f),
+      }),
+    );
+    await flush();
+    expect(findings2).toHaveLength(2);
+  });
+
   it("halts a deliberately stuck run at the step cap — no crash, no infinite loop", async () => {
     const state = await runLoop(
       scope,

