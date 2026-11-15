@@ -80,6 +80,67 @@ describe("attempt — technique-aware dispatch", () => {
     expect(miss.applicable).toBe(true);
   });
 
+  it("confirms a filtered blind SQLi via a model-synthesized bypass the fixed floor cannot reach", async () => {
+    // Models sqli-labs Less-25a: numeric blind (no error echoed), and the server
+    // strips `or`/`and` in one global pass — so every FIXED probe is neutralized
+    // (`0 OR 1=1` → `0  1=1`, broken). A row (the login block) shows only when the
+    // post-filter WHERE clause is true. The reflected input rides in a "Hint" line
+    // to prove the fingerprint ignores it.
+    const less25a = new StubSession((req) => {
+      const raw = new URL(req.url).searchParams.get("id") ?? "";
+      const filtered = raw.replace(/or/gi, "").replace(/and/gi, "").toLowerCase();
+      const row = raw.trim() === "1" || (/\bor\b/.test(filtered) && /1\s*=\s*1/.test(filtered));
+      const login = row ? "<p>Your Login name: adminuser Your Password: s3cret</p>" : "";
+      return {
+        status: 200,
+        body: `<html><body><h2>Welcome Dhakkan</h2>${login}<p>Hint: ${raw}</p></body></html>`,
+      };
+    });
+
+    // The fixed floor alone (no payloadSmith) cannot reach it — every fixed probe
+    // is filtered to a no-row page, so there is no differential to confirm on.
+    const floorMiss = await attempt(
+      less25a,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/Less-25a/", method: "GET", fields: ["id"] }),
+    );
+    expect(floorMiss.ok).toBe(false);
+
+    // With the model-backed smith, the bypass (`oorr` survives one strip → `or`)
+    // reproduces the app's own true/false split, so it confirms. The smith only
+    // supplies the payloads; the benign-anchored differential does the confirming.
+    const smith = async () => [{ t: "0 oorr 1=1", f: "0 oorr 1=2" }];
+    const hit = await attempt(
+      less25a,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:3000/Less-25a/",
+        method: "GET",
+        fields: ["id"],
+        payloadSmith: smith,
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/model-synthesized bypass/);
+    expect(hit.basis).toMatch(/neutralized by an input filter/);
+
+    // The smith cannot manufacture a finding on its own: a pair whose "false" leg
+    // still returns the row (here f="1", a known row) does NOT reproduce a
+    // true/false split, so it is rejected — no false positive on the model's word.
+    const liar = async () => [{ t: "0 oorr 1=1", f: "1" }];
+    const rejected = await attempt(
+      less25a,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:3000/Less-25a/",
+        method: "GET",
+        fields: ["id"],
+        payloadSmith: liar,
+      }),
+    );
+    expect(rejected.ok).toBe(false);
+  });
+
   it("confirms boolean-based SQLi on a POST form when an always-true condition returns more rows", async () => {
     // DVNA's /app/usersearch swallows the engine error (generic page) but builds
     // the query by concatenation: an always-true tautology dumps rows an always-

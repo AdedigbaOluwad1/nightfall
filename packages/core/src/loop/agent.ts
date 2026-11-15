@@ -18,12 +18,13 @@ import {
   type AttemptResult,
   attempt,
   findingProfile,
+  type PayloadSmith,
   T_AUTH_BYPASS,
   T_SQLI_DISCLOSURE,
 } from "./actions.js";
 import { type AttackContext, newContext } from "./context.js";
 import { interpret } from "./interpret.js";
-import { makeGatewayPlanner, type Planner } from "./planner.js";
+import { makeGatewayPayloadSmith, makeGatewayPlanner, type Planner } from "./planner.js";
 import { initialState, isDegraded, type RunState } from "./state.js";
 
 interface WorkItem {
@@ -63,6 +64,9 @@ export interface LoopDeps {
   peerSession?: (boundary: string | null) => Session;
   /** Model-driven next-action selector; undefined = pure deterministic order. */
   plan?: Planner;
+  /** Model-driven filter-bypass payload synthesis; undefined = fixed probes only
+   *  (the deterministic floor). */
+  payloadSmith?: PayloadSmith;
   record: (finding: Finding) => void;
   budgetUsd: number;
   maxRetries: number;
@@ -415,6 +419,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           context,
           baseline: anonBaseline,
           elevated,
+          payloadSmith: deps.payloadSmith,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -613,6 +618,7 @@ function buildDeps(
     peerSession:
       override?.peerSession ?? ((b) => new HttpSession(scope, gate, b ?? "__nf_anon_baseline__")),
     plan: override?.plan ?? makeGatewayPlanner(gateway),
+    payloadSmith: override?.payloadSmith ?? makeGatewayPayloadSmith(gateway),
     record: override?.record ?? ((f) => store.record(f)),
     budgetUsd: override?.budgetUsd ?? scope.budgetUsd,
     maxRetries: override?.maxRetries ?? 2,
