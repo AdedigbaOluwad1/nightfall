@@ -969,6 +969,29 @@ miss into a critical finding. That is the LLM doing something the deterministic 
 provably cannot — with the no-false-positive discipline fully intact. It degrades honestly too:
 no model / a 429 → the smith returns nothing and the loop is exactly the fixed floor again.
 
-**sqli-labs total: 3 findings** — Less-1 (string, error-based), Less-2 (numeric, error-based),
-and Less-25a (blind, behind an OR/AND filter, model-synthesized bypass). The Less-25a run also
-reflected the `id` value un-escaped (an incidental reflected XSS), not separately counted.
+**It generalizes past the one context.** Less-25a is numeric; the same mechanism also has to
+survive a different injection context and a stricter filter, or it is a one-trick stub. sqli-labs
+**Less-26a** is the dual case: a **string** context wrapped in parentheses (`WHERE id=('$id')`),
+still **blind**, behind a WAF that strips spaces, inline comments, `or`, and `and` outright — so
+the Less-25a payload itself (`0/**/oorr/**/1=1`) no longer works here (its comments and keyword
+both die). To confirm it the engine first appends a lone `'`: the response shifts, which tells it
+the sink is quote-significant (injectable), though not whether it is numeric or string — the
+model has to resolve that. It did, closing both the quote and the parenthesis it cannot see from
+the fixed probes:
+
+```
+└ ADAPT · model synthesized 8 filter-bypass payload(s) for 'id' — confirmed
+  model bypass true="1' && '1'='1" reproduced the row fingerprint; false="1' && '1'='2" suppressed it
+```
+
+`&&` stands in for the stripped `and`, and the trailing `'1'='1` closes the string the value sits
+inside while the opening `1'` closes the one the template opened — the parenthesis balance comes
+out of the model's own reasoning about the `('$id')` shape. The oracle stays **row-based** the
+whole way: the `'`-probe only decides _whether_ to escalate; the finding itself still rests on the
+app reproducing its true/false row split. A regression test locks the string-plus-paren case the
+same way the numeric one is locked (`actions.test.ts`).
+
+**sqli-labs total: 4 findings** — Less-1 (string, error-based), Less-2 (numeric, error-based),
+Less-25a (numeric blind, OR/AND filter, model-synthesized bypass), and Less-26a (string-in-parens
+blind, space/comment/OR/AND WAF, model-synthesized bypass). The Less-25a run also reflected the
+`id` value un-escaped (an incidental reflected XSS), not separately counted.

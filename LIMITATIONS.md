@@ -195,19 +195,24 @@ still out of scope — additive from here.
   finding for lockouts and false positives across every normal login. Recorded as a known miss,
   not counted. The run's capability was otherwise proven (same style confirmed CMDi and XSS).
 - **Filter-bypass payload synthesis is model-sourced but differential-confirmed (added; surfaced
-  by the sqli-labs Less-25a cold run).** The fixed probe set cannot adapt to a server-side input
-  filter (an OR/AND blacklist, a space/comment stripper, a WAF), so a genuinely injectable sink
-  behind one reads as a clean negative. When a SQLi probe draws no signal yet the parameter still
-  reacts to input, the loop now asks the model for boolean-oracle bypass pairs and confirms each
-  against the app's OWN true/false fingerprint (`modelBypassConfirm`). Deliberate bounds: it is
-  **SELECT-side boolean only** — no UNION, stacked, time-based, or write payloads are requested or
-  confirmed; it fires only where a non-empty row/no-row fingerprint exists (a dead parameter never
-  escalates, so no cost and no FP); and it costs one `exploit_reason` model call per filtered
-  field, so on a quota-limited backend it is a lever, not free. Residuals: the fingerprint is
-  token-based and tuned for a row-present/row-absent split (clearest in a numeric/blind context) —
-  a sink whose only tell is timing, a header, or an out-of-band callback is still out of scope; and
-  a filter the model cannot reason past in `MAX_BYPASS_PAIRS` tries is a miss. It degrades to the
-  exact fixed floor with no model (the smith returns nothing), so it is never a hidden dependency.
+  by the sqli-labs Less-25a cold run, generalized on Less-26a).** The fixed probe set cannot adapt
+  to a server-side input filter (an OR/AND blacklist, a space/comment stripper, a WAF), so a
+  genuinely injectable sink behind one reads as a clean negative. When a SQLi probe draws no signal
+  yet the parameter still reacts to input, the loop now asks the model for boolean-oracle bypass
+  pairs and confirms each against the app's OWN true/false fingerprint (`modelBypassConfirm`). A
+  lone-quote context probe tells the engine the sink is injectable (and so worth escalating) but
+  not whether it is numeric or string-in-parens — the model resolves the context and closes the
+  quote/parenthesis it cannot see. This is now demonstrated across both contexts: Less-25a (numeric,
+  OR/AND strip, `0/**/oorr/**/1=1`) and Less-26a (string-in-parens, space/comment/OR/AND WAF,
+  `1' && '1'='1`). Deliberate bounds: it is **SELECT-side boolean only** — no UNION, stacked,
+  time-based, or write payloads are requested or confirmed; it fires only where a non-empty
+  row/no-row fingerprint exists (a dead parameter never escalates, so no cost and no FP); and it
+  costs one `exploit_reason` model call per filtered field, so on a quota-limited backend it is a
+  lever, not free. Residuals: the oracle stays **row-based** — true-leg reproduces the row-present
+  fingerprint, false-leg suppresses it — so a sink whose only tell is timing, a response header, or
+  an out-of-band callback is still out of scope regardless of injection context; and a filter the
+  model cannot reason past in `MAX_BYPASS_PAIRS` tries is a miss. It degrades to the exact fixed
+  floor with no model (the smith returns nothing), so it is never a hidden dependency.
 
 ## 4. Authenticated broken-access-control confirmation is bounded by surface discovery
 
