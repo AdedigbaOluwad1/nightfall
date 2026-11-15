@@ -44,6 +44,18 @@ docker compose -f labs/docker-compose.yml up -d juiceshop
 pnpm --filter @nightfall/cli dev -- --scope packages/core/src/scope/example.scope.yaml
 ```
 
+**Cheapest zero-config demo (OWASP Bricks).** For the fastest reproducible run — a
+tiny PHP/MySQL app, unauth, ~15 steps to two findings — use the helper, which boots
+the container and provisions its database (waiting for MySQL _and_ Apache first, so a
+half-started lab can't silently serve "Unable to connect"):
+
+```bash
+scripts/pull-legacy-image.sh citizenstig/owaspbricks:latest   # one-time: its manifest is schema1
+./labs/bricks/up.sh                                            # boot + provision + verify
+pnpm --filter @nightfall/cli dev -- --scope demo-bricks.scope.yaml   # → SQLi + reflected XSS
+docker rm -f nf-demo                                           # tear down
+```
+
 Bring your own API keys: a Bifrost gateway endpoint (`BIFROST_BASE_URL` +
 `BIFROST_API_KEY`) and a `TAVILY_API_KEY`. See `.env.example` for the full list,
 including the `NF_MODEL_*` routing roles.
@@ -285,7 +297,7 @@ zeros — each a named, specific limitation, not a shared "gated" label.
 - `packages/core` — event bus, scope gate, session layer, gateway, evidence, report.
 - `apps/cli` — the streaming trace runner.
 - `apps/web` — live view (vite + react) over the `serve` WebSocket.
-- `labs` — docker-compose practice targets (Juice Shop, DVWA, WebGoat).
+- `labs` — docker-compose practice targets (Juice Shop, DVWA, WebGoat) and `bricks/up.sh`, the zero-config OWASP Bricks demo.
 
 ## Docs
 
