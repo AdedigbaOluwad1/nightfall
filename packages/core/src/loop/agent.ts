@@ -24,7 +24,7 @@ import {
 import { type AttackContext, newContext } from "./context.js";
 import { interpret } from "./interpret.js";
 import { makeGatewayPlanner, type Planner } from "./planner.js";
-import { initialState, type RunState } from "./state.js";
+import { initialState, isDegraded, type RunState } from "./state.js";
 
 interface WorkItem {
   technique: string;
@@ -209,8 +209,13 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         announceBudget("hypothesis");
         break;
       }
+      state.modelErrors++;
       const reason = err instanceof Error ? err.message : String(err);
-      bus.emit("hypothesis.failed", { component: fp.component, version: fp.version, reason });
+      bus.emit("hypothesis.failed", {
+        component: fp.component,
+        version: fp.version,
+        reason,
+      });
     }
     for (const c of candidates) {
       queue.push({
@@ -227,7 +232,13 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   // Deterministic chain seed: an authentication-bypass attempt that runs even
   // when grounding is unavailable, so the flagship chain never depends on the
   // model proposing it. A confirmation here seeds the authenticated follow-up.
-  queue.push({ technique: T_AUTH_BYPASS, url: scope.target, tier: 1, retries: 0, step: 1 });
+  queue.push({
+    technique: T_AUTH_BYPASS,
+    url: scope.target,
+    tier: 1,
+    retries: 0,
+    step: 1,
+  });
 
   // Always probe the discovered surface + the target itself for broken access.
   // A form or parameterized endpoint also gets a form-aware SQL-injection probe
@@ -248,7 +259,13 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   for (const ep of surface) {
     // A GraphQL endpoint answers only POST queries, so a GET access-probe is noise.
     if (!ep.graphql) {
-      queue.push({ technique: "access-probe", url: ep.url, tier: 1, retries: 0, step: 1 });
+      queue.push({
+        technique: "access-probe",
+        url: ep.url,
+        tier: 1,
+        retries: 0,
+        step: 1,
+      });
     }
     if (ep.hasParams || (ep.fields?.length ?? 0) > 0) {
       // A parameterized, form, or GraphQL endpoint gets the full read-only injection
@@ -275,13 +292,25 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
       }
     }
   }
-  queue.push({ technique: "access-probe", url: scope.target, tier: 1, retries: 0, step: 1 });
+  queue.push({
+    technique: "access-probe",
+    url: scope.target,
+    tier: 1,
+    retries: 0,
+    step: 1,
+  });
 
   // Active fingerprinting runs FIRST (unshifted to the front, exempt from the
   // planner): a quote probe trips an error page that discloses the framework
   // and version, which the loop re-grounds live — so the surface is expanded
   // before exploitation, not only at passive recon.
-  queue.unshift({ technique: T_SQLI_DISCLOSURE, url: scope.target, tier: 1, retries: 0, step: 1 });
+  queue.unshift({
+    technique: T_SQLI_DISCLOSURE,
+    url: scope.target,
+    tier: 1,
+    retries: 0,
+    step: 1,
+  });
 
   let tier2: Session | undefined;
   let escalated = false;
@@ -306,7 +335,10 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         try {
           decision = await deps.plan({
             objective: scope.objective,
-            artifacts: context.artifacts.map((a) => ({ kind: a.kind, label: a.label })),
+            artifacts: context.artifacts.map((a) => ({
+              kind: a.kind,
+              label: a.label,
+            })),
             findings: confirmed,
             pending: queue.map((q) => ({ technique: q.technique, url: q.url })),
           });
@@ -315,6 +347,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
             announceBudget("attempt");
             break;
           }
+          state.modelErrors++;
           decision = undefined;
         }
         if (decision && decision.pick > 0 && decision.pick < queue.length) {
@@ -338,7 +371,11 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
       context.visited.add(`${item.technique}|${item.url}`);
 
       const session = item.tier === 2 && tier2 ? tier2 : primary;
-      bus.emit("exploit.attempt", { technique: item.technique, target: item.url, n: state.steps });
+      bus.emit("exploit.attempt", {
+        technique: item.technique,
+        target: item.url,
+        n: state.steps,
+      });
 
       let result: AttemptResult;
       try {
@@ -357,7 +394,12 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        result = { ok: false, note: msg, transient: !msg.startsWith("blocked"), applicable: true };
+        result = {
+          ok: false,
+          note: msg,
+          transient: !msg.startsWith("blocked"),
+          applicable: true,
+        };
       }
 
       if (result.ok) {
@@ -470,7 +512,10 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
             costUsd: state.costUsd,
           });
         } else {
-          bus.emit("exploit.interpret", { decision: "pivot", note: "confirmed; continuing" });
+          bus.emit("exploit.interpret", {
+            decision: "pivot",
+            note: "confirmed; continuing",
+          });
         }
         continue;
       }
@@ -557,6 +602,7 @@ export async function runLoop(
   };
   const onCost = (e: { costUsd: number }) => {
     state.costUsd += e.costUsd;
+    state.modelCalls++;
   };
   bus.on("scope.blocked", onBlocked);
   bus.on("gateway.call", onCost);
@@ -582,6 +628,8 @@ export async function runLoop(
     findings: state.findings,
     blocked: state.blocked,
     costUsd: state.costUsd,
+    modelCalls: state.modelCalls,
+    degraded: isDegraded(state),
     haltedBy: state.haltedBy,
   });
   return state;

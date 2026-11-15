@@ -95,11 +95,21 @@ export function attachRenderer(): void {
         `  reached via ${e.via} · ${e.steps} steps · $${e.costUsd.toFixed(2)}`,
     ),
   );
-  bus.on("run.end", (e) =>
+  bus.on("run.end", (e) => {
     console.log(
       pc.bold("nightfall ▸") +
-        ` done · ${e.findings} finding(s) · ${e.blocked} blocked · $${e.costUsd.toFixed(2)}` +
+        ` done · ${e.findings} finding(s) · ${e.blocked} blocked · ${e.modelCalls} model call(s) · $${e.costUsd.toFixed(2)}` +
         (e.haltedBy ? ` · halted: ${e.haltedBy}` : ""),
-    ),
-  );
+    );
+    if (e.degraded) {
+      console.log(
+        pc.bold(pc.red("  ⚠ DEGRADED RUN")) +
+          pc.red(
+            " — the model was never reached (0 successful calls). Findings are from" +
+              " deterministic probes ONLY, with no live CVE grounding. This is NOT the" +
+              " AI-driven result; check BIFROST_API_KEY / BIFROST_BASE_URL and re-run.",
+          ),
+      );
+    }
+  });
 }

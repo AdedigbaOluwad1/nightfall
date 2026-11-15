@@ -3,6 +3,7 @@ import { bus } from "../src/events/bus.js";
 import type { Finding } from "../src/evidence/models.js";
 import type { Gateway } from "../src/gateway/bifrostClient.js";
 import { type LoopDeps, runLoop, scopeId } from "../src/loop/agent.js";
+import { isDegraded } from "../src/loop/state.js";
 import { ScopeGate } from "../src/scope/gate.js";
 import { ScopeFile } from "../src/scope/schema.js";
 import type { Session, SessionResponse } from "../src/session/index.js";
@@ -62,7 +63,12 @@ describe("runLoop — the decide/recover loop", () => {
           call++;
           return call === 1
             ? { ok: false, note: "flaky", transient: true, applicable: true }
-            : { ok: true, reachesObjective: true, note: "admin reached", applicable: true };
+            : {
+                ok: true,
+                reachesObjective: true,
+                note: "admin reached",
+                applicable: true,
+              };
         },
         record: (f) => findings.push(f),
       }),
@@ -83,7 +89,12 @@ describe("runLoop — the decide/recover loop", () => {
       gateway,
       baseDeps({
         maxRetries: Number.MAX_SAFE_INTEGER, // never give up voluntarily
-        attempt: async () => ({ ok: false, note: "stuck", transient: true, applicable: true }),
+        attempt: async () => ({
+          ok: false,
+          note: "stuck",
+          transient: true,
+          applicable: true,
+        }),
       }),
     );
 
@@ -157,6 +168,79 @@ describe("runLoop — the decide/recover loop", () => {
     expect(failures[0]?.component).toBe("OWASP Juice Shop");
     expect(failures[0]?.reason).toContain("429");
     expect(state.haltedBy).toBe("exhausted"); // loop still finished cleanly
+    expect(state.modelErrors).toBeGreaterThan(0); // the miss was counted
+    expect(state.modelCalls).toBe(0);
+    expect(isDegraded(state)).toBe(true); // no model ever answered → degraded
+  });
+
+  it("flags a run as degraded when the model is unreachable but marks a real success as grounded", async () => {
+    const ended: { modelCalls: number; degraded: boolean }[] = [];
+    bus.on("run.end", (e) => {
+      ended.push({ modelCalls: e.modelCalls, degraded: e.degraded });
+    });
+
+    const degradedState = await runLoop(
+      scope,
+      gate,
+      gateway,
+      baseDeps({
+        recon: async () => ({
+          fingerprints: [{ component: "nginx", version: "1.0" }],
+          endpoints: [
+            {
+              url: "http://localhost:3000/search",
+              method: "GET",
+              hasParams: true,
+            },
+          ],
+        }),
+        hypothesize: async () => {
+          throw new Error("401 Unauthorized — invalid api key");
+        },
+        plan: async () => {
+          throw new Error("401 Unauthorized — invalid api key");
+        },
+        attempt: async () => ({
+          ok: true,
+          reachesObjective: true,
+          note: "admin reached",
+          applicable: true,
+        }),
+      }),
+    );
+    await flush();
+
+    expect(degradedState.objectiveReached).toBe(true); // deterministic floor still worked
+    expect(degradedState.modelCalls).toBe(0);
+    expect(degradedState.modelErrors).toBeGreaterThan(0);
+    expect(isDegraded(degradedState)).toBe(true);
+    expect(ended.at(-1)?.degraded).toBe(true); // surfaced on run.end, not just internal
+
+    const groundedState = await runLoop(
+      scope,
+      gate,
+      gateway,
+      baseDeps({
+        recon: async () => ({
+          fingerprints: [{ component: "nginx", version: "1.0" }],
+          endpoints: [],
+        }),
+        hypothesize: async () => {
+          await bus.emit("gateway.call", {
+            step: "exploit_reason",
+            model: "x",
+            costUsd: 0,
+            cacheHit: true,
+          });
+          return [];
+        },
+        attempt: async () => ({ ok: false, note: "n/a", applicable: false }),
+      }),
+    );
+    await flush();
+
+    expect(groundedState.modelCalls).toBeGreaterThan(0);
+    expect(isDegraded(groundedState)).toBe(false); // a call landed → not degraded
   });
 
   it("re-grounds mid-run: a fingerprint a step discloses is grounded live against advisories", async () => {
@@ -205,7 +289,10 @@ describe("runLoop — the decide/recover loop", () => {
     await flush();
 
     // The disclosed framework was grounded live, mid-run — not only at recon.
-    expect(grounded).toContainEqual({ component: "Express", version: "4.22.1" });
+    expect(grounded).toContainEqual({
+      component: "Express",
+      version: "4.22.1",
+    });
     expect(regroundEvents[0]).toContain("Express");
   });
 

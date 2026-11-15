@@ -10,7 +10,12 @@ describe("RunTimeline — wall-clock attributed to phases", () => {
     const timeline = new RunTimeline(bus, () => clock);
 
     clock = 0;
-    await bus.emit("run.start", { runId: "r", target: "t", objective: "o", scopeId: "s" });
+    await bus.emit("run.start", {
+      runId: "r",
+      target: "t",
+      objective: "o",
+      scopeId: "s",
+    });
     clock = 1000;
     await bus.emit("recon.found", { endpoint: "/" });
     clock = 1500;
@@ -18,9 +23,20 @@ describe("RunTimeline — wall-clock attributed to phases", () => {
     clock = 4500;
     await bus.emit("exploit.attempt", { technique: "sqli", target: "/", n: 1 });
     clock = 6500;
-    await bus.emit("objective.reached", { via: "chain", steps: 2, costUsd: 0.02 });
+    await bus.emit("objective.reached", {
+      via: "chain",
+      steps: 2,
+      costUsd: 0.02,
+    });
     clock = 7000;
-    await bus.emit("run.end", { runId: "r", findings: 1, blocked: 0, costUsd: 0.02 });
+    await bus.emit("run.end", {
+      runId: "r",
+      findings: 1,
+      blocked: 0,
+      costUsd: 0.02,
+      modelCalls: 1,
+      degraded: false,
+    });
     timeline.stop();
 
     const b = timeline.breakdown();
@@ -37,7 +53,12 @@ describe("RunTimeline — wall-clock attributed to phases", () => {
   it("is empty-safe for a run with fewer than two events", async () => {
     const bus = new Emittery<NightfallEvents>();
     const timeline = new RunTimeline(bus, () => 0);
-    await bus.emit("run.start", { runId: "r", target: "t", objective: "o", scopeId: "s" });
+    await bus.emit("run.start", {
+      runId: "r",
+      target: "t",
+      objective: "o",
+      scopeId: "s",
+    });
     timeline.stop();
     const b = timeline.breakdown();
     expect(b.totalMs).toBe(0);

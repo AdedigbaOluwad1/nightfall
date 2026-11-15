@@ -10,7 +10,12 @@ export type HaltReason = "objective" | "budget" | "steps" | "exhausted";
 
 /** One typed event per interesting thing that happens during a run. */
 export interface NightfallEvents {
-  "run.start": { runId: string; target: string; objective: string; scopeId: string };
+  "run.start": {
+    runId: string;
+    target: string;
+    objective: string;
+    scopeId: string;
+  };
   "scope.loaded": { hosts: number; paths: number };
   "scope.blocked": { url: string; reason: string };
   "recon.found": { endpoint: string; component?: string; version?: string };
@@ -25,7 +30,10 @@ export interface NightfallEvents {
   "hypothesis.failed": { component: string; version: string; reason: string };
   "plan.decision": { chose: string; reason: string; fallback: boolean };
   "exploit.attempt": { technique: string; target: string; n: number };
-  "exploit.interpret": { decision: "retry" | "escalate" | "abandon" | "pivot"; note: string };
+  "exploit.interpret": {
+    decision: "retry" | "escalate" | "abandon" | "pivot";
+    note: string;
+  };
   "gateway.call": {
     step: StepType;
     model: string;
@@ -34,7 +42,11 @@ export interface NightfallEvents {
     priceSource?: "override" | "catalog" | "table" | "estimate";
   };
   "session.login": { boundary: string; tier: 1 | 2; ok: boolean };
-  "budget.exceeded": { capUsd: number; spentUsd: number; stage: "hypothesis" | "attempt" };
+  "budget.exceeded": {
+    capUsd: number;
+    spentUsd: number;
+    stage: "hypothesis" | "attempt";
+  };
   "finding.confirmed": { id: string; title: string; severity: Severity };
   "chain.step": {
     step: number;
@@ -49,6 +61,10 @@ export interface NightfallEvents {
     findings: number;
     blocked: number;
     costUsd: number;
+    /** Model calls that completed during the run. */
+    modelCalls: number;
+    /** The model was reached for and never answered — findings are deterministic-only. */
+    degraded: boolean;
     haltedBy?: HaltReason;
   };
 }

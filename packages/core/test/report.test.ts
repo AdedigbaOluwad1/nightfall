@@ -37,7 +37,11 @@ const bac: Finding = {
   cvssScore: 7.5,
   basis: "Impact-confirmed: a restricted resource was returned.",
   evidence: [
-    { request: "GET /rest/admin/application-configuration", response: '{"config":{}}', note: "" },
+    {
+      request: "GET /rest/admin/application-configuration",
+      response: '{"config":{}}',
+      note: "",
+    },
   ],
   remediation: "Enforce server-side authorization.",
 };
@@ -143,5 +147,31 @@ describe("toMarkdown — a report a consultant would sign", () => {
     expect(md.indexOf("1. **SQL Injection")).toBeLessThan(md.indexOf("2. **Broken Access"));
     expect(md).toContain("uses the **admin session JWT**");
     expect(md).toContain("← objective reached.");
+  });
+
+  it("marks a degraded run unmissably and never presents it as the grounded result", () => {
+    const md = toMarkdown([sqli], {
+      target: "http://localhost:3000/",
+      objective: "Reach the admin dashboard",
+      haltedBy: "objective",
+      costUsd: 0,
+      modelCalls: 0,
+      degraded: true,
+    });
+    expect(md).toContain("DEGRADED RUN");
+    expect(md).toContain("model calls: 0");
+    expect(md).toContain("deterministic probe floor");
+    // The banner sits above the executive summary so a reader cannot miss it.
+    expect(md.indexOf("DEGRADED RUN")).toBeLessThan(md.indexOf("## Executive summary"));
+  });
+
+  it("does not add the degraded banner to an ordinary grounded run", () => {
+    const md = toMarkdown([sqli], {
+      target: "http://localhost:3000/",
+      modelCalls: 7,
+      costUsd: 0.0123,
+    });
+    expect(md).not.toContain("DEGRADED RUN");
+    expect(md).toContain("model calls: 7");
   });
 });
