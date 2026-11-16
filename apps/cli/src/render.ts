@@ -53,6 +53,11 @@ export function attachRenderer(): void {
     console.log(`  ${tag.exploit(`▸ exploit`)}  #${e.n} ${e.technique}`),
   );
   bus.on("exploit.interpret", (e) => console.log(`    └ ${e.decision.toUpperCase()} · ${e.note}`));
+  bus.on("exploit.adapt", (e) =>
+    console.log(
+      `    ${pc.magenta("└ ADAPT")} · model synthesized ${e.candidates} filter-bypass payload(s) for '${e.field}'${e.confirmed ? pc.green(" — confirmed") : " — none worked"}`,
+    ),
+  );
   bus.on("session.login", (e) =>
     console.log(
       e.ok

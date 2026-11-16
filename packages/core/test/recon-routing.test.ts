@@ -63,6 +63,45 @@ describe("recon — gate routing (zero out-of-scope)", () => {
   });
 });
 
+describe("recon — malformed form field recovery", () => {
+  // A legacy app (WackoPicko's login) wraps a form's inputs in <tr>/<td> with no
+  // enclosing <table>. HTML5 foster-parenting hoists those inputs OUT of the form
+  // element, so the parse tree sees an empty form and the whole POST injection
+  // surface (the username sink) vanishes. recon must recover the fields from the
+  // raw form region so the sink stays probeable.
+  const MALFORMED = `<html><body>
+    <form action="/users/login.php" method="POST">
+      <tr><td>Username :</td><td> <input type="text" name="username" /></td></tr>
+      <tr><td>Password :</td><td> <input type="password" name="password" /></td></tr>
+      <tr><td><input type="submit" value="login" /></td></tr>
+    </form>
+  </body></html>`;
+
+  class FormSession implements Session {
+    readonly tier = 1 as const;
+    async login(): Promise<void> {}
+    async request(): Promise<SessionResponse> {
+      return { status: 200, headers: { "content-type": "text/html" }, body: MALFORMED };
+    }
+    async dispose(): Promise<void> {}
+  }
+
+  it("recovers a POST form's injectable fields when its inputs are foster-parented out of the form", async () => {
+    const s = ScopeFile.parse({
+      target: "http://localhost:3000/users/login.php",
+      objective: "t",
+      allow: { hosts: ["localhost"], paths: ["/"] },
+    });
+    const result = await recon(new FormSession(), new ScopeGate(s), s);
+    const login = result.endpoints.find(
+      (e) => e.url.endsWith("/users/login.php") && e.method === "POST",
+    );
+    expect(login).toBeDefined();
+    expect(login?.fields).toContain("username"); // the injectable sink survived
+    expect(login?.formData).toMatchObject({ username: "", password: "" }); // full form for resubmission
+  });
+});
+
 const OPENAPI_SPEC = JSON.stringify({
   openapi: "3.0.1",
   servers: [{ url: "/" }],

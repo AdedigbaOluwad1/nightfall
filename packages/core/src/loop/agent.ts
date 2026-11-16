@@ -7,7 +7,7 @@ import type { Gateway } from "../gateway/bifrostClient.js";
 import { BudgetExceededError } from "../gateway/budget.js";
 import { type Candidate, groundedLookup } from "../hypothesis/tavilyClient.js";
 import type { Fingerprint } from "../recon/fingerprint.js";
-import { type GraphQLProbe, type ReconResult, recon } from "../recon/index.js";
+import { type GraphQLProbe, type ReconResult, recon, type SoapProbe } from "../recon/index.js";
 import type { ScopeGate } from "../scope/gate.js";
 import type { ScopeFile } from "../scope/schema.js";
 import { BrowserSession } from "../session/browserSession.js";
@@ -18,12 +18,13 @@ import {
   type AttemptResult,
   attempt,
   findingProfile,
+  type PayloadSmith,
   T_AUTH_BYPASS,
   T_SQLI_DISCLOSURE,
 } from "./actions.js";
 import { type AttackContext, newContext } from "./context.js";
 import { interpret } from "./interpret.js";
-import { makeGatewayPlanner, type Planner } from "./planner.js";
+import { makeGatewayPayloadSmith, makeGatewayPlanner, type Planner } from "./planner.js";
 import { initialState, isDegraded, type RunState } from "./state.js";
 
 interface WorkItem {
@@ -40,6 +41,8 @@ interface WorkItem {
   formData?: Record<string, string>;
   /** A GraphQL Query-field argument to inject into, when this targets a GraphQL endpoint. */
   graphql?: GraphQLProbe;
+  /** A SOAP operation parameter to inject into, when this targets a SOAP endpoint. */
+  soap?: SoapProbe;
   /** Finding id of the step that seeded this one — the attack-graph edge. */
   parentId?: string;
   /** 1-based position in the chain. */
@@ -61,6 +64,9 @@ export interface LoopDeps {
   peerSession?: (boundary: string | null) => Session;
   /** Model-driven next-action selector; undefined = pure deterministic order. */
   plan?: Planner;
+  /** Model-driven filter-bypass payload synthesis; undefined = fixed probes only
+   *  (the deterministic floor). */
+  payloadSmith?: PayloadSmith;
   record: (finding: Finding) => void;
   budgetUsd: number;
   maxRetries: number;
@@ -115,6 +121,23 @@ function toFinding(item: WorkItem, result: AttemptResult, scopeId: string): Find
     consumed: result.consumed,
     produced: produced && produced.length > 0 ? produced : undefined,
   };
+}
+
+/**
+ * The de-dup identity of a finding's location: host + path + the sorted set of
+ * query-parameter KEYS, never their values. The payload lives in the value, so
+ * two URL variants of one injectable parameter (`?id=2`, `?id=2 UNION …`) share
+ * a scope and collapse to one finding, while two distinct parameters on the same
+ * path keep distinct scopes and are both reported.
+ */
+function findingScope(url: string): string {
+  try {
+    const u = new URL(url);
+    const keys = [...u.searchParams.keys()].sort().join(",");
+    return `${u.host}${u.pathname}#${keys}`;
+  } catch {
+    return url;
+  }
 }
 
 /**
@@ -251,14 +274,14 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   // front-loading the real inputs lets the battery reach them before the budget
   // drains probing router params. Stable within equal field counts.
   const weight = (ep: (typeof reconResult.endpoints)[number]) =>
-    ep.graphql ? 1 : (ep.fields?.length ?? 0);
+    ep.graphql || ep.soap ? 1 : (ep.fields?.length ?? 0);
   const surface = reconResult.endpoints
     .map((ep, i) => ({ ep, i }))
     .sort((a, b) => weight(b.ep) - weight(a.ep) || a.i - b.i)
     .map((x) => x.ep);
   for (const ep of surface) {
-    // A GraphQL endpoint answers only POST queries, so a GET access-probe is noise.
-    if (!ep.graphql) {
+    // A GraphQL or SOAP endpoint answers only POST calls, so a GET access-probe is noise.
+    if (!ep.graphql && !ep.soap) {
       queue.push({
         technique: "access-probe",
         url: ep.url,
@@ -285,6 +308,7 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           fields: ep.fields,
           formData: ep.formData,
           graphql: ep.graphql,
+          soap: ep.soap,
           tier: 1,
           retries: 0,
           step: 1,
@@ -315,6 +339,9 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
   let tier2: Session | undefined;
   let escalated = false;
   const confirmed: { title: string; severity: string }[] = [];
+  // De-dup identity of findings already recorded this run, so one vulnerability
+  // reached through several discovered URL variants is counted once.
+  const recorded = new Set<string>();
 
   try {
     while (queue.length > 0 && !state.objectiveReached) {
@@ -386,11 +413,13 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
           fields: item.fields,
           formData: item.formData,
           graphql: item.graphql,
+          soap: item.soap,
           authenticated: scope.credentials.length > 0,
           objectiveHint: hint,
           context,
           baseline: anonBaseline,
           elevated,
+          payloadSmith: deps.payloadSmith,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -404,14 +433,25 @@ async function drive(scope: ScopeFile, state: RunState, deps: LoopDeps): Promise
 
       if (result.ok) {
         const finding = toFinding(item, result, sid);
-        deps.record(finding);
-        state.findings++;
-        bus.emit("finding.confirmed", {
-          id: finding.id,
-          title: finding.title,
-          severity: finding.severity,
-        });
-        confirmed.push({ title: finding.title, severity: finding.severity });
+        // De-duplicate by weakness class + endpoint scope (host + path +
+        // parameter KEYS, never payload values): the same injectable parameter
+        // reached through several discovered URL variants — DSVW lists
+        // example-payload links to its own ?id= sink — is one vulnerability, not
+        // several. Keying on parameter keys means two genuinely different params
+        // on one path still count separately, so this under-merges rather than
+        // ever hides a distinct finding.
+        const dedupKey = `${finding.cwe}|${findingScope(item.url)}`;
+        if (!recorded.has(dedupKey)) {
+          recorded.add(dedupKey);
+          deps.record(finding);
+          state.findings++;
+          bus.emit("finding.confirmed", {
+            id: finding.id,
+            title: finding.title,
+            severity: finding.severity,
+          });
+          confirmed.push({ title: finding.title, severity: finding.severity });
+        }
 
         // Publish discovered artifacts to the world-model so later steps use them.
         if (result.discovered) {
@@ -578,6 +618,7 @@ function buildDeps(
     peerSession:
       override?.peerSession ?? ((b) => new HttpSession(scope, gate, b ?? "__nf_anon_baseline__")),
     plan: override?.plan ?? makeGatewayPlanner(gateway),
+    payloadSmith: override?.payloadSmith ?? makeGatewayPayloadSmith(gateway),
     record: override?.record ?? ((f) => store.record(f)),
     budgetUsd: override?.budgetUsd ?? scope.budgetUsd,
     maxRetries: override?.maxRetries ?? 2,

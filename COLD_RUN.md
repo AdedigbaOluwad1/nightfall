@@ -527,3 +527,471 @@ fully AI-driven. Keying the check on spend would have falsely flagged it; keying
 `modelCalls` does not. This is the **sixth** bug a skeptical read exposed, the first found
 from outside the team, and the only one that touched not a number but the claim the whole
 system rests on.
+
+## DSVW — the minimal-chrome edge case, and a numeric-context blind spot
+
+A new multi-lab expansion pass (new stacks/surfaces, same cold discipline) opened with
+**DSVW (Damn Small Vulnerable Web)** — a single-file, ~98-line Python app whose entire
+injectable surface is query parameters on `/` (`?id=`, `?name=`, `?domain=`, `?xml=`, …),
+served with almost no page chrome. It is the deliberate opposite of Mutillidae's 49 KB
+shell: the stress test for whether detection still works when there is barely any HTML to
+scan. We had not read its vulnerability logic (only its listen port and bind address, to
+containerize it — operator-level, like a `docker run`).
+
+- **Target:** DSVW (`stamparm/DSVW`), containerized `python:3.12-slim`, rebound to
+  `0.0.0.0` inside the container and published loopback-only on `127.0.0.1:65412`.
+- **Setup:** `allow.hosts: [localhost]`, `/` allowed, `$3` budget, 30 steps — the standing
+  cold-run rigor, nothing loosened.
+- **Date:** 2026-11-15.
+- **Backend note (flagged):** this pass began on a role split (`exploit_reason` →
+  `gemini-3.5-flash`, the rest → `gemini-3.5-flash-lite`). Mid-pass the strong model hit a
+  hard **~20-requests/day** free-tier cap (the whole flagship **and** Flash tier carry it;
+  only Flash-**Lite** has ~500/day), so all roles were moved to `gemini-3.5-flash-lite`
+  until the quota resets. Flagged for review, one line to revert. The existing 30 findings
+  were produced on the `gemini-4-hydrogen` flagship; this pass runs a weaker model, so its
+  results under-claim relative to those, never over-claim.
+
+**Run 1 — 0 findings, 9 model calls (not degraded).** A clean zero on an app that is
+_nothing but_ trivially-injectable parameters is exactly the honest-zero-that-isn't the
+rest of this file is about. We did not accept it.
+
+> **Intervention point #1.** The comfortable read: "minimal app, graceful miss." But DSVW's
+> `/?id=` is a textbook SQL injection. We reproduced the agent's probes by hand and read
+> the raw responses. `/?id=2'` → **HTTP 500 with `sqlite3.OperationalError` in the body**;
+> `/?id=2 AND 1=1` vs `/?id=2 AND 1=2` → **different row counts**; `/?id=2 UNION SELECT …`
+> → **leaks `admin`**. The vulnerability is real and confirmable three ways. The agent
+> missed all three.
+
+**Root cause — a numeric-context blind spot, doubly masked.** DSVW's sink is
+`WHERE id=<value>` — an **unquoted, numeric** context. Nightfall's SQLi battery was
+string-context only: a quote-pair error probe and a `' OR '1'='1` / `' AND '1'='2` boolean
+oracle. Against `WHERE id=<value>` both fail, and _two_ precision mechanisms conspired to
+make the failure silent:
+
+1. The quote probe _does_ trip `sqlite3.OperationalError` — but a **benign control value**
+   (`nf…`, alphanumeric) is itself an invalid column reference in `WHERE id=nf…`, so the
+   control **also** errors. The benign-control differential (the WebGoat-FP backstop)
+   correctly concluded "present regardless of input" and suppressed it. The backstop
+   working as designed produced a false negative.
+2. The string boolean payloads (`nf…' OR '1'='1`) only yield the same parse error for both
+   arms — no row differential — so that oracle fell through to the 5xx status contract,
+   which classifies a 500 as a transient server error and abandons.
+
+Net: a real SQLi, abandoned as "transient server error 500." A numeric boolean oracle
+(`0 OR 1=1` → every row vs `0 AND 1=1` → none) separates all-rows from none and confirms
+on a pure row differential — the same impact basis as the string oracle, so it cannot be
+fooled by menu chrome and never touches the suppressing error-control path.
+
+**The fix, and getting it wrong first (the honest part).** We added a numeric-context
+boolean oracle beside the string one. First pass used literal-space payloads (`0 OR 1=1`).
+Unit test green, hand-curl with `%20` green — but the **live re-run still found 0**.
+
+> **Intervention point #2 — our own fix didn't fire, and we read the live run instead of
+> trusting the passing unit test.** The planner was correctly targeting `/?id=2`; the
+> oracle was reached; it still missed. The cause was encoding: `withParam` serializes a
+> GET value's spaces to `+`, and DSVW's raw Python query parser does **not** decode `+`
+> back to a space — so `0+OR+1=1` is invalid SQL and 500s, while `0%20OR%201%3D1` works.
+> The unit test, driving an in-memory stub, never exercised the wire encoding, so it passed
+> on a payload the real target rejected. (The same `+` issue silently weakens the _string_
+> oracle on any raw-query app that doesn't decode `+` — named below, not fixed here.) The
+> fix: write the oracle's spaces as SQL inline comments `/**/`, which carry no space to
+> encode and read as whitespace to every engine. `0/**/OR/**/1=1` survives both parsers.
+
+**The honest result.** After the comment-payload fix, a cold re-run (21 model calls, not
+degraded, no code tuned to DSVW) **confirms the SQL injection** on the `id` parameter —
+CWE-89, critical, **Impact-confirmed** by the numeric boolean oracle (`0 OR 1=1` returned
+every record; `0 AND 1=1` returned none). Zero false positives: every confirmation is a
+row differential, so DSVW's vuln-name index menu — the Mutillidae/WebGoat FP trap — never
+fires.
+
+Two honest caveats, both under-claimed rather than dressed up:
+
+- **It is one finding, not four — now enforced in code.** The first fixed run emitted
+  **four** SQLi findings — all the _same_ `id`-parameter vulnerability, reached through four
+  URL variants DSVW lists as example links on its index (`?id=2`, `?id=2 UNION …`,
+  `?id=(SELECT CASE …)`, …). True positives of one bug, not four. Finding de-duplication now
+  keys on weakness class + endpoint scope (host + path + sorted parameter _keys_, never
+  payload values), so the re-run reports a correct **1** directly, while two genuinely
+  different parameters on one path still count separately. A regression test
+  (`loop.test.ts`) locks both directions. (Numbers shown as corrected, not silently edited:
+  4 → 1.)
+- **The `+`-encoding masking, fixed.** The first fix's spaces serialized to `+` (above); the
+  general cause — `withParam` emitting `+` for spaces, which a raw query parser does not
+  decode — is now fixed at the source (`withParam` emits `%20`), so every space-bearing GET
+  payload survives a raw parser, not just the numeric oracle's `/**/` form.
+- **SQLi only (named residual).** DSVW's XSS (`?v=`), OS command injection (`?domain=`), LFI
+  (`?path=`/`?include=`) and XXE (`?xml=`) were attempted but **not** confirmed even after the
+  `%20` fix — their checks have their own detection-shape mismatches against DSVW's sinks
+  (reflection target, command-output signal, XML body), separate from the encoding issue.
+  Named as residual coverage, not claimed.
+
+This is the **seventh** bug a cold target exposed by reading what the agent did rather than
+trusting a number — here a _zero_, on an app too small to hide behind. Its regression test
+(`actions.test.ts`, "confirms boolean-based SQLi in a NUMERIC context …") locks that the
+numeric oracle confirms where the quote and string-boolean probes are defeated, and does
+not fire on a stable endpoint.
+
+## DVWS (SOAP) — from blind spot to confirmed capability
+
+Lab #5 targeted the SOAP/WSDL surface, where Nightfall had **zero** coverage. The honest
+first outcome was reached before any scan: the only community "DVWS" Docker image
+(`tssoffsec/dvws`) stood up as a **DVWA-style HTML-form clone** — its index links
+`brute-force.php`, `error-sql-injection.php`, `reflected-xss.php`, … and every WSDL path
+404s — not a SOAP service. The genuine WSDL-based DVWS (`interference-security/DVWS`) ships
+no clean image (manual XAMPP + PHP SOAP extension).
+
+> **Intervention point — don't fake a SOAP run on a non-SOAP app.** The temptation was to
+> point the agent at the "DVWS" image anyway and record a result. But it isn't a SOAP
+> target, so any number from it would be a second DVWA, mislabeled. Instead we verified the
+> gap at its source: a grep of `packages/core/src` for `wsdl|soap` returned nothing — recon
+> had no WSDL discovery and the battery no SOAP-envelope injector. A live run on that image
+> would only reproduce a 0 the gap already predicts, so it was named in
+> [LIMITATIONS.md](./LIMITATIONS.md) as a code-verified blind spot, not dressed up as a pass.
+
+**Then the gap was closed, with a real target.** Rather than leave SOAP named-but-untested,
+a genuine vulnerable WSDL service was stood up to build and validate the capability against:
+a [spyne](https://spyne.io) service (`nf-lab-soap`, loopback-only on `127.0.0.1:8891`)
+exposing `findUsersByName(username)` whose handler builds `SELECT name FROM users WHERE
+username='<username>'` by raw string concatenation — a real SOAP SQLi, with the engine error
+hidden behind spyne's generic `faultstring>Internal Error` (so error-based can't fire).
+
+The capability mirrors the existing GraphQL path (discover a contract → enumerate injectable
+inputs → read-only battery):
+
+- **Recon** probes the conventional WSDL locations; on a hit it parses the target namespace,
+  the service address, each operation's SOAPAction, and the request-wrapper's string
+  parameters, emitting one endpoint per (operation, parameter). Read-only by construction —
+  an allow-list of read-like operation verbs (get/find/search/list/read/…) with a
+  state-changing-verb deny check, the SOAP analogue of GraphQL's Query-only rule.
+- **Injection** builds a SOAP 1.1 envelope with the payload XML-escaped into the target
+  element (the server's XML parser decodes it back, so the raw quote still reaches the sink)
+  and siblings at benign defaults.
+- **Confirmation** is the boolean oracle, extended to count repeated SOAP **result elements**:
+  a generic fault defeats error-based, but `' OR '1'='1` returns N `<tns:string>` rows and
+  `' AND '1'='2` returns 0 — the same impact-confirmed differential the HTML/JSON oracle uses.
+
+Live result against the fixture — recon found the probe and the oracle confirmed, unaided:
+
+```
+recon endpoints: 1 | soap probes: 1
+  SOAP: {"operation":"findUsersByName","param":"username", … ,"soapAction":"findUsersByName"}
+attempt.ok = true
+note  = always-true condition returned 3 record(s) vs 0 for always-false on
+        'findUsersByName.username' — boolean-based SQLi
+basis = Impact-confirmed: two requests differing only in a boolean … read rows unauthorized.
+```
+
+A benign/non-injectable operation (same result set for both payloads) yields no differential
+and does not confirm — locked by a unit test alongside the live check. The residual **XML-RPC**
+surface, and SOAP inputs that are not string-typed, remain named in
+[LIMITATIONS.md](./LIMITATIONS.md) for a later increment.
+
+## sqli-labs — cold runs on a canonical public SQLi benchmark
+
+With the legacy-manifest pull path fixed (see below), `acgpiano/sqli-labs` stood up
+loopback-only (`127.0.0.1:8899`) — the 65-lesson SQLi training app ("Welcome Dhakkan").
+Two representative lessons were run **cold**, each as its own scope targeting the lesson's
+`?id=` entry point (sqli-labs hides the injectable parameter behind instructional text, so a
+crawl from `/` never seeds it — the operator supplies the entry URL, as on a real engagement):
+
+- **Less-1 (string context)** — recon discovered `/Less-1/?id=1`, fingerprinted Apache
+  2.4.7 / PHP 5.5.9, and the battery confirmed **SQL Injection (critical)** error-based: an
+  unmatched quote returned the MySQL parser error, absent from a benign control. 22 model
+  calls, `$0.00`, halted on an exhausted queue — not degraded. The agent then tried an
+  auth-bypass escalation and **honestly abandoned it** (Less-1 is not a login surface).
+- **Less-2 (numeric context)** — same outcome at `/Less-2/?id=1`: error-based SQLi confirmed,
+  22 model calls, not degraded.
+
+**Honest framing — no metric-gaming.** Both confirmations are error-based disclosures;
+sqli-labs leaks the engine error openly, so the error path short-circuits before the boolean
+oracles are even reached. These runs are **not** a numeric-oracle showcase (that remains
+DSVW's, where the error path is defeated). And because sqli-labs is, by construction, 65
+near-identical SQLi challenges, running all of them would inflate the tally meaninglessly — a
+representative string + numeric pair is counted, not the full set.
+
+## Infrastructure — the legacy schema1 manifest blocker (and the general fix)
+
+This host runs Docker 29.8.2 with the containerd store (containerd 2.1), which refuses the old
+schema1 manifest format (`application/vnd.docker.distribution.manifest.v1+prettyjws`). Many
+classic vulnerable-app images (xvwa, owaspbricks, old mutillidae, …) were pushed years ago in
+schema1 and fail a direct `docker pull`. `scripts/pull-legacy-image.sh` converts schema1 →
+v2s2 with skopeo (run from `quay.io/skopeo/stable`, nothing installed on the host) and loads
+the result into the daemon — proven on `owaspbricks` and `xvwa`. crAPI was never blocked by
+this (its images were already local); its only gap was a missing compose file, now durable at
+`labs/crapi/` (all ten images present, binds loopback by default, booted and verified serving
+the real "crAPI" web + identity API before teardown).
+
+## Pikachu — a broad-class cold run (SQLi + XSS + command injection)
+
+`area39/pikachu` (loopback-only, `127.0.0.1:8900`, DB initialised via its `install.php`) is a
+multi-class PHP/MySQL training app — the first expansion target that exercises the XSS and
+OS-command-injection paths at breadth, not just SQLi. Two cold runs:
+
+**Root crawl (`/`, 40-step cap).** Recon crawled the vuln surface (sqli / xss / csrf /
+bruteforce pages) and the battery confirmed **7 findings** — 29 model calls, `$0.00`, halted
+on the step cap (not degraded):
+
+- **3 SQLi (critical)** — `sqli_id.php`, `sqli_str.php`, `sqli_search.php`, all error-based.
+- **4 reflected XSS (high)** — `xss_reflected_get.php`, `xss_stored.php`, `xss_01.php`,
+  `xss_04.php`.
+
+**Targeted RCE run (`/vul/rce/`, scoped path).** Recon found `rce_ping.php` / `rce_eval.php`
+and the battery **impact-confirmed OS Command Injection (critical)** at `rce_ping.php`: a
+benign appended `; id` returned its output (`uid=…www-data`), absent from a benign control —
+read-only, no destructive command. 25 model calls, not degraded; the scope gate blocked 96
+out-of-path URLs (deny-by-default working). The agent then **honestly abandoned** two
+escalation attempts ("Unauthenticated RCE via php2shell" against the PHP-`eval` page) with
+"no command output observed" rather than fabricate a result.
+
+**FP audit (mandatory on a high count).** All 8 findings were independently ground-truthed by
+hand before being counted: each SQLi leaks the MySQL parser error on a quoted probe; each XSS
+reflects a raw `<i>` marker un-escaped while a bracket-free control does not; the cmdi returns
+live `id` output. No false positives. One honest **under-label**: `xss_stored.php` is a
+_stored_ XSS surface that the detector confirmed via its immediate reflection and reported as
+"Reflected" — the finding is real, the class label understates its severity. (`xss_01.php` /
+`xss_04.php` are additional reflective endpoints this image ships beyond the canonical
+reflected/stored pages; each is an independently injectable URL.)
+
+Pikachu's remaining classes — PHP-`eval` code injection, file inclusion, SSRF, unsafe upload,
+CSRF — are out of the current battery and left as named residuals, not claimed.
+
+## XVWA — a broad-class run on the Cloudflare Llama backend, and a traversal-depth fix
+
+`tuxotron/xvwa` (loopback-only, `127.0.0.1:8901`, DB initialised) was run cold — and this time
+on the **Cloudflare Workers AI Llama 3.3 70B** backend: `NF_MODEL_STRONG` pointed at
+`cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast`, so every model call (the loop's only
+model-calling role, `exploit_reason`) ran on Cloudflare. The root crawl confirmed **SQL
+Injection** and **OS Command Injection** (41/41 calls on Llama, 0 on Gemini, not degraded) —
+proof the "shed load to a second free-tier quota" lever works end to end.
+
+**FP audit — a decoy parameter caught and dismissed.** XVWA's SQLi page carries the literal
+words "SQL" and "error" in its own lesson text, and its GET `?item=` parameter is a **decoy**:
+every GET payload (`1`, `1'`, a benign string, boolean pairs) returns the byte-identical 8923-
+byte page. A naive error-string match would fire on the static text and report a false SQLi.
+It did not: the injection is on the **POST** form (`<select name=item>` / `search`), which recon
+captured, and there `item=1'` leaks a genuine MySQL parser error while the benign control
+`item=nf…` does not — the benign-control differential both confirmed the real POST injection and
+suppressed the decoy GET surface. (Verified by hand before counting.)
+
+**An honest miss that drove a real fix.** XVWA's file-inclusion module leaks `/etc/passwd`, but
+the first targeted Path-Traversal run **abandoned** it — "no file contents leaked" — rather than
+fabricate. Reading the raw responses showed why: the module sits at
+`/var/www/html/xvwa/vulnerabilities/fi/` (six levels below `/`), and the probe used a single
+fixed `../../../../etc/passwd` (four levels) that never climbs out of the module directory. The
+file leaks only with an **absolute** path or a **≥6-level** traversal.
+
+> **Intervention point — fix the detector, don't fudge the result.** The miss was a genuine
+> coverage gap, not a hardened target. `pathTraversalCheck` now probes an absolute path plus a
+> range of depths (3/5/7/10 `../`) instead of one fixed depth — excess `../` collapses at the
+> root, so an over-deep sequence is harmless, and every payload still names the same benign,
+> world-readable file (read-only). A regression test locks it: an include that leaks only at
+> depth ≥ 6 (or absolute) is now confirmed, while one that never leaves its directory is not.
+> The re-run then confirmed **Path Traversal / File Inclusion** via the `/etc/passwd` payload,
+> absent from a benign control — 21 model calls, not degraded.
+
+**XVWA total: 3 findings** — SQL Injection, OS Command Injection, Path Traversal / File
+Inclusion — all hand-verified, the LFI landed only after the depth fix. (The re-run reported the
+LFI twice under two URL scopes of the same `file` parameter; it is one vulnerability, counted
+once.) The stored/reflected XSS and file-upload modules were not reached within the step caps and
+are named residuals, not claimed.
+
+## WackoPicko — a recon fix for malformed forms, and the Cloudflare quota wall
+
+`adamdoupe/wackopicko` (the author's image, loopback-only on `127.0.0.1:8902`) is a canonical
+scanner-benchmark app. The first cold run (on the Cloudflare Llama backend) confirmed **1**
+finding — reflected XSS at `/pictures/search.php` (the search term is escaped in the input
+`value` but reflected **un-escaped** in the "Pictures tagged as '…'" heading). But a hand
+ground-truth showed the login form is a textbook SQLi (`username=admin'` → a raw MySQL
+syntax error), and the agent **missed** it — so, per the "never accept a miss without proving
+why" rule, this was run down rather than shrugged off.
+
+**Root cause — a recon form-parsing gap.** WackoPicko's login form wraps its inputs in
+`<tr>`/`<td>` with **no enclosing `<table>`** (invalid HTML). HTML5 foster-parenting then
+hoists those inputs _out_ of the `<form>` element, so cheerio's `$(form).find("input")` returns
+nothing: recon recorded the POST endpoint with **no fields**, and the SQLi probe — with nothing
+to inject — degraded to a harmless GET `?q=` on the wrong surface. A recon+attempt diagnostic
+pinned it exactly: `{method: "POST", hasParams: true}` with `fields`/`formData` both empty.
+
+> **Intervention point — fix recon, don't tune to the lab.** `recon` now falls back to a raw
+> form-region scan when the parse tree yields an empty form, recovering the named controls that
+> foster-parenting stripped (`recon/index.ts`). With the fix recon captures
+> `fields: ["username"], formData: {username, password}`, and the error-based check confirms the
+> login SQLi on the `username` sink (benign-control differential). A regression test locks it: a
+> form whose inputs are foster-parented out still yields its injectable fields
+> (`recon-routing.test.ts`). This is a general robustness win — legacy PHP apps routinely ship
+> table-wrapped form inputs — not a WackoPicko special-case.
+
+**An honesty beat — the Cloudflare quota wall and the degraded banner.** The re-run (still on
+the Llama backend) hit a hard **429 — "you have used up your daily free allocation of 10,000
+neurons"** on every model call. The run came back **DEGRADED (0 model calls)** and the report
+led with the explicit banner — _"NOT the AI-driven result"_ — exactly as designed. The
+deterministic probe floor still confirmed **both** findings (including the login SQLi, proving
+the recon fix stands without the model), but a degraded run is never counted as the AI-driven
+result. Per STOP-on-429, `NF_MODEL_STRONG` reverted to Gemini flash-lite (ample RPD left) and
+the lab was re-run clean: **2 findings — SQL Injection (login, critical) + reflected XSS
+(high)** — 33 model calls, not degraded. That is the counted result.
+
+**WackoPicko total: 2 findings**, both hand-verified. The file-inclusion and stored-XSS modules
+were not confirmed (the `sample.php` LFI did not leak `/etc/passwd` on the probed parameters)
+and are named residuals, not claimed.
+
+## PyGoat — a Python/Django broad-class run, and a shell-error false positive
+
+`pygoat/pygoat` (OWASP's Django teaching app, loopback-only on `127.0.0.1:8903`) is the first
+**Python/Django** target in the battery — a deliberate break from the PHP lineage, to see the
+detectors against a different framework and a different error vocabulary. Every lab is behind a
+Django login, so this was also the second end-to-end **authenticated** run (after WackoPicko).
+
+**Capability proof first — login, then a known-true finding.** Per the "never report a broken
+capability as an honest zero" rule, nothing was trusted until the agent was proven to drive the
+app. A `nfuser` account was registered, and the session's CSRF-aware login (hidden-token capture
+
+- persisted `csrftoken` cookie) was confirmed to reach the gated labs. The capability was then
+  proven on the lab whose vuln was hand-verified true: **OS Command Injection** at `/cmd_lab`
+  (`dig {domain}` via `shell=True`; `domain=127.0.0.1; id` → `uid=0(root)`). The agent confirmed
+  it (impact-confirmed, `; id` output absent from a benign control) — proving authenticated,
+  CSRF-protected POST attacks work end-to-end.
+
+> **Intervention point — a shell error masquerading as SQLi.** That same `/cmd_lab` run returned
+> a **second** finding: error-based SQL Injection on the `domain` field. A quote probe (`'"`) made
+> the page print `/bin/sh: 1: Syntax error: Unterminated quoted string`, and the phrase
+> _"unterminated quoted string"_ is one of `SQL_ERROR`'s alternatives — so the shell's own parse
+> error, emitted by the (real) command-injection sink, tripped the SQLi signature, benign-control
+> differential and all. cmd_lab runs no SQL at all: this was a false positive. The fix adds a
+> `SHELL_ERROR` guard (`/bin/sh:`, `sh: <n>:`, `command not found`, … — text no DB driver emits);
+> when the matched "SQL error" is actually shell-produced, the SQLi signal is withheld. A
+> regression test locks it: a `/bin/sh` syntax error at a command-injection sink must not confirm
+> SQLi (`actions.test.ts`). Re-run: `/cmd_lab` now reports exactly **1** finding — the command
+> injection — and the phantom SQLi is gone. A general hardening against every nslookup/ping/dig
+> shell-out sink, not a PyGoat special-case.
+
+**Reflected XSS — and a scope-prefix lesson.** `/xssL` reflects the `q` search term un-escaped
+into an `<h3>` (`q=NF<b>` → raw `<b>`). The first run **missed** it. Root cause was neither the
+detector nor the model: the search form's `action` is `/xssL1` (a distinct path alias of the same
+view), and the scope allow-list named `/xssL` — which, under the gate's **segment-boundary**
+prefix match (`/xssL` covers `/xssL` and `/xssL/…`, _not_ `/xssL1`), dropped the form endpoint at
+recon time, so the `q` sink was never probed. This is a scope-config correctness point, not a
+code change: with `/xssL1` added to scope, the agent confirmed **Reflected XSS** via `q` (marker
+reflected un-escaped). Worth recording because a too-narrow allow-list produces a silent miss that
+_looks_ like a clean negative — the opposite of the honesty posture.
+
+**An honest miss, left as a miss — the gated password sink.** `/sql_lab` is a real SQLi, but an
+unusually buried one: the view runs `login.objects.filter(user=name)` (ORM-safe) as a **gate**
+before concatenating — so the injectable sink is the **`pass`** field, reached only when `name`
+exactly matches a seeded user. The agent found nothing, and the miss is double-caused and
+legitimate: (1) recon deliberately excludes `password`-type inputs from injectable sinks
+(injecting a password field causes lockouts/noise and is almost never a sink), so `pass` is never
+probed; (2) the only probed field, `name`, is ORM-gated, so it yields no differential. Even
+lifting the password exclusion would not reach it without knowing `name=admin`. This is a true
+negative with a proven cause — **not** a broken-capability zero (the same run style confirmed
+CMDi and XSS, login worked, 18 model calls) — so it is documented as a limitation, not patched
+around. See [LIMITATIONS.md](./LIMITATIONS.md).
+
+**PyGoat total: 2 findings** — OS Command Injection (critical) + Reflected XSS (high), both on
+the Gemini flash-lite backend, not degraded. The run's lasting artifact is the `SHELL_ERROR`
+guard: a false positive that only a different-framework, shell-based sink would surface.
+
+## OWASP Bricks — a canonical SQLi/XSS benchmark, and a dual-reflection brick
+
+`citizenstig/owaspbricks` (loopback-only on `127.0.0.1:8904`, `inject` DB provisioned via its own
+`config/setup.php`) is a classic deliberately-vulnerable PHP/MySQL benchmark organised into
+"bricks": content pages (`/content-1/…/content-6/`), login pages (`/login-1/…`), and file-upload
+pages. Run cold on two bricks of different classes.
+
+**content-1 — a brick that is XSS _and_ SQLi at once.** The page echoes its own query verbatim
+(`SELECT * FROM users WHERE idusers=<id> LIMIT 1`), so the `id` parameter is reflected un-escaped
+_and_ concatenated into a numeric SQL context. The agent confirmed **Reflected XSS** (`id=nfx7q9<i>`
+→ raw `<i>` in the echoed query — hand-verified). It **missed** the co-located error-based SQLi
+within the step budget: the planner wandered into hallucinated-CVE escalations (PHP-FPM RCE, a
+mod_proxy DoS, an open-redirect) instead of completing the quote probe — the same hallucinated-CVE
+pattern seen on Pikachu, and honestly abandoned each with no signal. The SQLi is real
+(`id=1'"` → _"You have an error in your SQL syntax"_; the benign control `id=nfabc123` yields only
+_"Unknown column"_, which is **not** a `SQL_ERROR` alternative, so the differential is clean) — and
+the identical error-based SQLi class **is** confirmed on the next brick, so this is a per-endpoint
+miss, not a detector gap. Counted conservatively: content-1 = **1** (the XSS actually confirmed).
+
+**login-1 — error-based SQLi and reflected XSS on the username sink.** The login form concatenates
+`username` raw into `WHERE name='<username>' and password=…`. The agent confirmed **SQL Injection**
+(critical — quote probe on `username` leaks the MySQL error, absent from a benign control) and
+**Reflected XSS** (the username echoes un-escaped into the query string on the page). Both
+hand-verified: `username=admin'` → MySQL syntax error; `username=' OR '1'='1' -- -` → _"logged
+in."_ (auth bypass); `username=nfx7q9<i>` → raw `<i>` reflected. login-1 = **2**.
+
+**OWASP Bricks total: 3 findings** — Reflected XSS (content-1), SQL Injection + Reflected XSS
+(login-1) — all hand-verified, on the Gemini flash-lite backend, not degraded. Residuals, named not
+claimed: content-1's error-based SQLi (a within-budget planner miss, class confirmed on login-1),
+and the remaining content/login/file-upload bricks (not run).
+
+## The model earning its place — a filter-bypass the fixed floor cannot reach
+
+Every prior finding in this document was, in the end, confirmed by the **deterministic
+floor** — a fixed battery of hand-written probes. The model chose _which_ technique to run
+next, but the detection itself used fixed payloads, and an honest reviewer could fairly ask:
+what does the LLM actually add to _detection_? This section is the answer, and it is the
+sharpest result in the file.
+
+**The gap.** The floor's SQLi probes inject a FIXED payload set (`' OR '1'='1`,
+`0/**/OR/**/1=1`, the quote probe `'"`). Any server-side input filter that neutralizes those
+defeats the floor — no matter how injectable the sink is. sqli-labs **Less-25a** is exactly
+that: a **numeric blind** SQLi (`WHERE id=$id`, no error echoed) behind
+`preg_replace('/or/i','')` + `/AND/i` — it strips `or`/`and`. Hand-verified, the fixed probes
+fail both ways: `?id=1'"` raises no visible error (blind), and `?id=0 OR 1=1` is rewritten to
+`?id=0  1=1` (broken) → the row-bearing "Login name" block never appears. The floor correctly
+returns nothing — an honest miss with a real cause.
+
+**The capability.** When a SQLi probe draws no signal **but the parameter still reacts to
+input** (a non-empty true/false fingerprint exists), the loop now hands the model the filter's
+observed behaviour and asks for boolean-oracle bypass _pairs_. The model supplies payloads; it
+does **not** get to declare a finding. Each pair is confirmed only when its true-leg reproduces
+the application's own row-present fingerprint and its false-leg suppresses it — the app's
+demonstrated differential, never the model's word (`modelBypassConfirm`, `loop/actions.ts`).
+
+> **Why this is honest, not a backdoor to false positives.** The model is a payload _source_;
+> the confirmation is the same benign-anchored differential every other finding uses. A
+> hallucinated payload that does not actually work produces no fingerprint split and is
+> discarded. A regression test locks both directions: the filtered sink is **missed** without
+> the smith and **confirmed** with it, and a smith whose "false" leg still returns the row is
+> **rejected** (`actions.test.ts`). The capability adds zero false-positive surface.
+
+**The live run.** Against Less-25a on the Gemini flash-lite backend, the agent emitted a
+distinct `ADAPT` trace step and confirmed the SQLi (critical) via a **compound** bypass the
+model reasoned out on its own:
+
+```
+└ ADAPT · model synthesized 6 filter-bypass payload(s) for 'id' — confirmed
+  model bypass true='0/**/oorr/**/1=1' reproduced the row fingerprint; false='0/**/oorr/**/1=2' suppressed it
+```
+
+`oorr` survives the single `/or/i` strip (→ `or`), and the `/**/` inline comments stand in for
+any filtered spaces — two evasions composed in one payload. The floor alone returns nothing on
+this endpoint; the model-synthesized payload, confirmed by the app's own behaviour, turns the
+miss into a critical finding. That is the LLM doing something the deterministic scanner
+provably cannot — with the no-false-positive discipline fully intact. It degrades honestly too:
+no model / a 429 → the smith returns nothing and the loop is exactly the fixed floor again.
+
+**It generalizes past the one context.** Less-25a is numeric; the same mechanism also has to
+survive a different injection context and a stricter filter, or it is a one-trick stub. sqli-labs
+**Less-26a** is the dual case: a **string** context wrapped in parentheses (`WHERE id=('$id')`),
+still **blind**, behind a WAF that strips spaces, inline comments, `or`, and `and` outright — so
+the Less-25a payload itself (`0/**/oorr/**/1=1`) no longer works here (its comments and keyword
+both die). To confirm it the engine first appends a lone `'`: the response shifts, which tells it
+the sink is quote-significant (injectable), though not whether it is numeric or string — the
+model has to resolve that. It did, closing both the quote and the parenthesis it cannot see from
+the fixed probes:
+
+```
+└ ADAPT · model synthesized 8 filter-bypass payload(s) for 'id' — confirmed
+  model bypass true="1' && '1'='1" reproduced the row fingerprint; false="1' && '1'='2" suppressed it
+```
+
+`&&` stands in for the stripped `and`, and the trailing `'1'='1` closes the string the value sits
+inside while the opening `1'` closes the one the template opened — the parenthesis balance comes
+out of the model's own reasoning about the `('$id')` shape. The oracle stays **row-based** the
+whole way: the `'`-probe only decides _whether_ to escalate; the finding itself still rests on the
+app reproducing its true/false row split. A regression test locks the string-plus-paren case the
+same way the numeric one is locked (`actions.test.ts`).
+
+**sqli-labs total: 4 findings** — Less-1 (string, error-based), Less-2 (numeric, error-based),
+Less-25a (numeric blind, OR/AND filter, model-synthesized bypass), and Less-26a (string-in-parens
+blind, space/comment/OR/AND WAF, model-synthesized bypass). The Less-25a run also reflected the
+`id` value un-escaped (an incidental reflected XSS), not separately counted.

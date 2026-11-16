@@ -55,6 +55,144 @@ describe("attempt — technique-aware dispatch", () => {
     expect(miss.applicable).toBe(true);
   });
 
+  it("does not mislabel a shell error at a command-injection sink as error-based SQLi", async () => {
+    // PyGoat's /cmd_lab shells out `dig {domain}`. A bare quote probe makes
+    // /bin/sh print `Syntax error: Unterminated quoted string`, whose phrase also
+    // appears in SQL_ERROR — so without the shell-error guard the quote probe
+    // confirmed a phantom error-based SQLi on top of the (real) command injection.
+    const shellSink = new StubSession((req) => {
+      const body = decodeURIComponent(req.body ?? "");
+      const q = `${req.url} ${body}`;
+      if (q.includes("'\"") || q.includes("%27%22")) {
+        return {
+          status: 200,
+          body: "<pre>/bin/sh: 1: Syntax error: Unterminated quoted string</pre>",
+        };
+      }
+      return { status: 200, body: "<pre>Server: 127.0.0.1</pre>" };
+    });
+    const miss = await attempt(
+      shellSink,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/cmd_lab", method: "POST", fields: ["domain"] }),
+    );
+    expect(miss.ok).toBe(false);
+    expect(miss.applicable).toBe(true);
+  });
+
+  it("confirms a filtered blind SQLi via a model-synthesized bypass the fixed floor cannot reach", async () => {
+    // Models sqli-labs Less-25a: numeric blind (no error echoed), and the server
+    // strips `or`/`and` in one global pass — so every FIXED probe is neutralized
+    // (`0 OR 1=1` → `0  1=1`, broken). A row (the login block) shows only when the
+    // post-filter WHERE clause is true. The reflected input rides in a "Hint" line
+    // to prove the fingerprint ignores it.
+    const less25a = new StubSession((req) => {
+      const raw = new URL(req.url).searchParams.get("id") ?? "";
+      const filtered = raw.replace(/or/gi, "").replace(/and/gi, "").toLowerCase();
+      const row = raw.trim() === "1" || (/\bor\b/.test(filtered) && /1\s*=\s*1/.test(filtered));
+      const login = row ? "<p>Your Login name: adminuser Your Password: s3cret</p>" : "";
+      return {
+        status: 200,
+        body: `<html><body><h2>Welcome Dhakkan</h2>${login}<p>Hint: ${raw}</p></body></html>`,
+      };
+    });
+
+    // The fixed floor alone (no payloadSmith) cannot reach it — every fixed probe
+    // is filtered to a no-row page, so there is no differential to confirm on.
+    const floorMiss = await attempt(
+      less25a,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/Less-25a/", method: "GET", fields: ["id"] }),
+    );
+    expect(floorMiss.ok).toBe(false);
+
+    // With the model-backed smith, the bypass (`oorr` survives one strip → `or`)
+    // reproduces the app's own true/false split, so it confirms. The smith only
+    // supplies the payloads; the benign-anchored differential does the confirming.
+    const smith = async () => [{ t: "0 oorr 1=1", f: "0 oorr 1=2" }];
+    const hit = await attempt(
+      less25a,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:3000/Less-25a/",
+        method: "GET",
+        fields: ["id"],
+        payloadSmith: smith,
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/model-synthesized bypass/);
+    expect(hit.basis).toMatch(/neutralized by an input filter/);
+
+    // The smith cannot manufacture a finding on its own: a pair whose "false" leg
+    // still returns the row (here f="1", a known row) does NOT reproduce a
+    // true/false split, so it is rejected — no false positive on the model's word.
+    const liar = async () => [{ t: "0 oorr 1=1", f: "1" }];
+    const rejected = await attempt(
+      less25a,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:3000/Less-25a/",
+        method: "GET",
+        fields: ["id"],
+        payloadSmith: liar,
+      }),
+    );
+    expect(rejected.ok).toBe(false);
+  });
+
+  it("generalizes the model bypass to a string+parenthesis context behind a WAF-style filter", async () => {
+    // Models sqli-labs Less-26a: WHERE id=('$id') — a quoted, parenthesized,
+    // blind context behind a WAF that strips or/and AND spaces AND comments. Every
+    // fixed probe dies; only a payload that closes the quote+paren, uses `||`
+    // instead of OR, and contains no whitespace survives (e.g. 0')||('1'='1).
+    const less26a = new StubSession((req) => {
+      const raw = new URL(req.url).searchParams.get("id") ?? "";
+      const filtered = raw
+        .replace(/or/gi, "")
+        .replace(/and/gi, "")
+        .replace(/[/*#-]/g, "")
+        .replace(/\s/g, "");
+      // The value is substituted into WHERE id=('<filtered>'); a row returns iff
+      // that expression is true — the natural value, or a bypass that reopens the
+      // paren with a surviving tautology, e.g. ('0')||('1'='1').
+      const expr = `('${filtered}')`;
+      const row =
+        raw.trim() === "1" || (/\)(\|\||or|&&)\(/i.test(expr) && /'(\w+)'='\1'/.test(expr));
+      const login = row ? "<p>Your Login name: adminuser Your Password: s3cret</p>" : "";
+      return {
+        status: 200,
+        body: `<html><body><h2>Welcome Dhakkan</h2>${login}<p>Hint: ${raw}</p></body></html>`,
+      };
+    });
+
+    const floorMiss = await attempt(
+      less26a,
+      "SQL Injection",
+      opts({ url: "http://localhost:3000/Less-26a/", method: "GET", fields: ["id"] }),
+    );
+    expect(floorMiss.ok).toBe(false);
+
+    // The model returns pairs across contexts; the engine confirms the one that
+    // actually reproduces the true/false split — here the string+paren `||` bypass.
+    const smith = async () => [
+      { t: "0 oorr 1=1", f: "0 oorr 1=2" }, // numeric — does NOT fit this context
+      { t: "0')||('1'='1", f: "0')||('1'='2" }, // string+paren — fits
+    ];
+    const hit = await attempt(
+      less26a,
+      "SQL Injection",
+      opts({
+        url: "http://localhost:3000/Less-26a/",
+        method: "GET",
+        fields: ["id"],
+        payloadSmith: smith,
+      }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/model-synthesized bypass/);
+  });
+
   it("confirms boolean-based SQLi on a POST form when an always-true condition returns more rows", async () => {
     // DVNA's /app/usersearch swallows the engine error (generic page) but builds
     // the query by concatenation: an always-true tautology dumps rows an always-
@@ -88,6 +226,149 @@ describe("attempt — technique-aware dispatch", () => {
       opts({ url: "http://localhost:3000/app/products", method: "POST", fields: ["name"] }),
     );
     expect(miss.ok).toBe(false);
+  });
+
+  it("confirms boolean-based SQLi in a NUMERIC context where the quote and string-boolean probes are defeated", async () => {
+    // A raw-concatenation numeric sink (`WHERE id=<value>`, as in DSVW). The quote
+    // probe errors — but a benign alphanumeric control is itself an invalid column
+    // reference and errors too, so the error-based differential correctly suppresses
+    // it; the string-boolean payloads also just error, yielding no row differential.
+    // Only the unquoted numeric oracle (0 OR 1=1 vs 0 AND 1=1) separates all-rows
+    // from none. This is the gap the DSVW cold run surfaced (see COLD_RUN.md).
+    const numericSink = new StubSession((req) => {
+      const v = (new URL(req.url).searchParams.get("id") ?? "").replace(/\/\*\*\//g, " ");
+      if (v === "0 OR 1=1") {
+        return {
+          status: 200,
+          body: "<table><tr><td>a</td></tr><tr><td>b</td></tr><tr><td>c</td></tr></table>",
+        };
+      }
+      if (v === "0 AND 1=1") return { status: 200, body: "<table></table>" };
+      if (/^\d+$/.test(v)) return { status: 200, body: "<table><tr><td>one</td></tr></table>" };
+      // Any quote probe, string-boolean payload, OR benign alphanumeric control is
+      // an invalid predicate → the same engine error. The benign control erroring
+      // too is exactly what defeats the error-based check.
+      return { status: 500, body: "sqlite3.OperationalError: no such column" };
+    });
+    const hit = await attempt(
+      numericSink,
+      "SQL Injection",
+      opts({ url: "http://localhost:65412/?id=2" }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/numeric context/);
+    expect(hit.basis).toMatch(/Impact-confirmed/);
+
+    // A stable endpoint that returns the same rows for every payload yields no
+    // differential under the numeric oracle either — no false confirm.
+    const stable = new StubSession(() => ({
+      status: 200,
+      body: "<table><tr><td>fixed</td></tr></table>",
+    }));
+    const miss = await attempt(
+      stable,
+      "SQL Injection",
+      opts({ url: "http://localhost:65412/?id=2" }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("confirms boolean-based SQLi over SOAP by counting repeated result elements", async () => {
+    // A WSDL-first SOAP service (spyne/.NET/JAX-WS shape) swallows the engine error
+    // behind a generic SOAP fault, so error-based never fires — the boolean oracle
+    // is the only confirmation path. An always-true tautology returns more <string>
+    // result elements than an always-false one; an uninjectable operation returns the
+    // same count for both. The payload rides an XML text node, so it arrives escaped
+    // and must be decoded before the "query" sees it — exactly as a real parser does.
+    const decodeXml = (s: string) =>
+      s
+        .replace(/&apos;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+    const rows = (names: string[]) =>
+      `<?xml version="1.0"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" ` +
+      `xmlns:tns="http://soaplab.local/user"><soapenv:Body><tns:findUsersByNameResponse>` +
+      `<tns:findUsersByNameResult>${names.map((n) => `<tns:string>${n}</tns:string>`).join("")}` +
+      `</tns:findUsersByNameResult></tns:findUsersByNameResponse></soapenv:Body></soapenv:Envelope>`;
+    const soapSink = new StubSession((req) => {
+      const raw = decodeXml(req.body ?? "");
+      const v = raw.match(/<tns:username>([\s\S]*?)<\/tns:username>/)?.[1] ?? "";
+      if (/OR '1'='1/.test(v)) return { status: 200, body: rows(["alice", "bob", "admin"]) };
+      if (/AND '1'='2/.test(v)) return { status: 200, body: rows([]) };
+      return { status: 200, body: rows(["admin"]) };
+    });
+    const soap = {
+      operation: "findUsersByName",
+      param: "username",
+      namespace: "http://soaplab.local/user",
+      soapAction: "findUsersByName",
+      fixedParams: [],
+    };
+    const hit = await attempt(
+      soapSink,
+      "SQL Injection",
+      opts({ url: "http://localhost:8891/", method: "POST" as const, soap }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/boolean-based/);
+    expect(hit.basis).toMatch(/Impact-confirmed/);
+
+    // A SOAP operation that returns the same result set for every payload yields no
+    // differential, so it never confirms (no false positive on a non-injectable op).
+    const stable = new StubSession(() => ({ status: 200, body: rows(["fixed"]) }));
+    const miss = await attempt(
+      stable,
+      "SQL Injection",
+      opts({ url: "http://localhost:8891/", method: "POST" as const, soap }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("confirms path traversal at depth — a deeply-nested include a shallow probe misses", async () => {
+    // XVWA-style: the include leaks /etc/passwd via an absolute path or a traversal
+    // deep enough to climb out of /app/vulnerabilities/fi/ (six levels below root) —
+    // but a shallow 4-dot probe stays inside the module directory and reads nothing.
+    // The old fixed-depth probe silently missed this; the multi-depth probe lands it.
+    const PASSWD = "root:x:0:0:root:/root:/bin/bash\n";
+    const deepInclude = new StubSession((req) => {
+      const file = new URL(req.url).searchParams.get("file") ?? "";
+      const depth = (file.match(/\.\.\//g) ?? []).length;
+      if (file.startsWith("/etc/passwd") || depth >= 6) return { status: 200, body: PASSWD };
+      return { status: 200, body: "<p>file not found in module directory</p>" };
+    });
+    const hit = await attempt(
+      deepInclude,
+      "Path Traversal",
+      opts({ url: "http://localhost:8901/xvwa/vulnerabilities/fi/?file=readme.txt" }),
+    );
+    expect(hit.ok).toBe(true);
+    expect(hit.note).toMatch(/host file contents leaked/);
+
+    // An include that never leaves its directory (no payload leaks) does not confirm.
+    const safe = new StubSession(() => ({ status: 200, body: "<p>no such file</p>" }));
+    const miss = await attempt(
+      safe,
+      "Path Traversal",
+      opts({ url: "http://localhost:8901/app/?file=readme.txt" }),
+    );
+    expect(miss.ok).toBe(false);
+  });
+
+  it("encodes a GET payload's spaces as %20, never + (survives a raw query parser)", async () => {
+    // URLSearchParams serializes spaces to '+', which a raw (non-form) query parser
+    // does not decode back to a space — mangling a space-bearing payload like
+    // ' OR '1'='1. Every probe URL must carry %20, never a '+' separator.
+    const seen: string[] = [];
+    const rec = new StubSession((req) => {
+      seen.push(req.url);
+      return { status: 200, body: "ok" };
+    });
+    await attempt(rec, "SQL Injection", opts({ url: "http://localhost:65412/?id=2" }));
+    const spacedPayloadProbes = seen.filter((u) => /%20(OR|AND)%20/i.test(u));
+    expect(spacedPayloadProbes.length).toBeGreaterThan(0);
+    expect(seen.some((u) => /\+(OR|AND|SELECT)/i.test(u))).toBe(false);
   });
 
   it("does not flag an authorized resource as broken access control on an authenticated run", async () => {

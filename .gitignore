@@ -7,3 +7,5 @@ dist/
 evidence/*.jsonl
 runs/
 .DS_Store
+# generated run artifacts (reports, audit/evidence, timings)
+nightfall-findings.*

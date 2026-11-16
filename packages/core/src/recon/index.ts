@@ -30,6 +30,26 @@ export interface GraphQLProbe {
   fixedArgs: string;
 }
 
+/**
+ * How to drive one string parameter of a SOAP operation. The endpoint is the
+ * service address (POST); a probe builds a SOAP envelope calling `<operation>`
+ * with the payload at `<param>` and every sibling parameter at a benign default.
+ * Only read-like operations (find/get/search/list/…) are ever described here —
+ * never a create/update/delete — so a SOAP probe is read-only by construction.
+ */
+export interface SoapProbe {
+  /** The SOAP operation, e.g. `findUsersByName`. */
+  operation: string;
+  /** The string parameter the payload is injected into, e.g. `username`. */
+  param: string;
+  /** The service target namespace, for the envelope's operation element. */
+  namespace: string;
+  /** The SOAPAction header the binding declares for the operation (may be ""). */
+  soapAction: string;
+  /** Other string parameters pre-filled with a benign default, to keep the call valid. */
+  fixedParams: { name: string; value: string }[];
+}
+
 export interface ReconEndpoint {
   url: string;
   method: "GET" | "POST";
@@ -40,6 +60,8 @@ export interface ReconEndpoint {
   formData?: Record<string, string>;
   /** A GraphQL Query-field argument to inject into, when this is a GraphQL endpoint. */
   graphql?: GraphQLProbe;
+  /** A SOAP operation parameter to inject into, when this is a SOAP/WSDL endpoint. */
+  soap?: SoapProbe;
 }
 
 export interface ReconResult {
@@ -132,7 +154,15 @@ export async function recon(
       // client (showdown, marked), so the links exist only as source in the raw
       // HTML — invisible to an <a href> crawl, but a genuine in-scope surface.
       for (const m of res.body.matchAll(/\]\((\/[^)\s"']+)\)/g)) enqueue(m[1] ?? "");
-      $("form").each((_, el) => {
+      // Raw form regions in document order — a fallback for forms the HTML5 parser
+      // renders empty. Legacy apps often wrap a form's inputs in `<tr>`/`<td>` with
+      // no enclosing `<table>` (WackoPicko's login does); HTML5 foster-parenting then
+      // hoists those inputs OUT of the form element, so `$(form).find("input")`
+      // returns nothing and the form's entire POST injection surface goes invisible.
+      const rawForms = [
+        ...res.body.matchAll(/<form\b[^>]*>([\s\S]*?)(?=<\/form\b|<form\b|$)/gi),
+      ].map((m) => m[1] ?? "");
+      $("form").each((formIdx, el) => {
         const action = $(el).attr("action") ?? url;
         const method = ($(el).attr("method") ?? "GET").toUpperCase() === "POST" ? "POST" : "GET";
         let abs: string;
@@ -149,21 +179,45 @@ export async function recon(
         // SQLi runs only when `Submit` is set), so injecting one field in isolation
         // silently does nothing. `fields` stays the injectable text sinks only.
         const formData: Record<string, string> = {};
+        const addControl = (
+          name: string | undefined,
+          type: string,
+          value: string,
+          checked: boolean,
+        ) => {
+          if (!name) return;
+          const t = type.toLowerCase();
+          if (t === "checkbox" || t === "radio") {
+            if (checked) formData[name] = value || "on";
+          } else {
+            formData[name] = value;
+          }
+          if (!NON_INJECTABLE.test(t) && !fields.includes(name)) fields.push(name);
+        };
         $(el)
           .find("input,textarea,select")
           .each((_i, input) => {
-            const name = $(input).attr("name");
-            if (!name) return;
-            const type = ($(input).attr("type") ?? "text").toLowerCase();
-            if (type === "checkbox" || type === "radio") {
-              if ($(input).attr("checked") !== undefined) {
-                formData[name] = $(input).attr("value") ?? "on";
-              }
-            } else {
-              formData[name] = $(input).attr("value") ?? "";
-            }
-            if (!NON_INJECTABLE.test(type) && !fields.includes(name)) fields.push(name);
+            addControl(
+              $(input).attr("name"),
+              $(input).attr("type") ?? "text",
+              $(input).attr("value") ?? "",
+              $(input).attr("checked") !== undefined,
+            );
           });
+        // Nothing found via the parse tree → recover controls from the raw form
+        // region (same document order), so a malformed form still yields its fields.
+        if (fields.length === 0 && Object.keys(formData).length === 0) {
+          const raw = rawForms[formIdx] ?? "";
+          for (const im of raw.matchAll(/<(?:input|textarea|select)\b[^>]*>/gi)) {
+            const tag = im[0];
+            addControl(
+              tag.match(/\bname\s*=\s*["']?([^"'\s>]+)/i)?.[1],
+              tag.match(/\btype\s*=\s*["']?([^"'\s>]+)/i)?.[1] ?? "text",
+              tag.match(/\bvalue\s*=\s*["']([^"']*)["']/i)?.[1] ?? "",
+              /\bchecked\b/i.test(tag),
+            );
+          }
+        }
         endpoints.set(`${method} ${abs}`, {
           url: abs,
           method,
@@ -198,6 +252,16 @@ export async function recon(
     const key = `${ep.method} ${ep.url} ${ep.graphql?.field}.${ep.graphql?.arg}`;
     if (!endpoints.has(key)) endpoints.set(key, ep);
     bus.emit("recon.found", { endpoint: `${ep.url} (graphql: ${ep.graphql?.field})` });
+  }
+
+  // SOAP surface: a WSDL-first service publishes no crawlable HTML and no JSON
+  // contract — its operations and their parameters live in a WSDL document. If one
+  // is served, enumerate the read-like operations' string parameters as injectable
+  // inputs (never a create/update/delete operation, so this stays read-only).
+  for (const ep of await soapEndpoints(session, gate, scope, origin)) {
+    const key = `${ep.method} ${ep.url} ${ep.soap?.operation}.${ep.soap?.param}`;
+    if (!endpoints.has(key)) endpoints.set(key, ep);
+    bus.emit("recon.found", { endpoint: `${ep.url} (soap: ${ep.soap?.operation})` });
   }
 
   // Real-tool enrichment — best-effort, never on the critical path.
@@ -479,6 +543,145 @@ async function graphqlEndpoints(
       continue;
     }
     const endpoints = schemaToProbes(schema, url);
+    if (endpoints.length > 0) return endpoints;
+  }
+  return [];
+}
+
+/** Conventional locations a SOAP service publishes its WSDL from. */
+const WSDL_PATHS = [
+  "/?wsdl",
+  "/service?wsdl",
+  "/services?wsdl",
+  "/soap?wsdl",
+  "/ws?wsdl",
+  "/api/soap?wsdl",
+  "/wsdl",
+];
+
+/** Cap on SOAP (operation, param) probes ingested from one WSDL. */
+const SOAP_PROBE_LIMIT = 25;
+
+/**
+ * Operation names we treat as READ-like and will probe. A WSDL carries no
+ * type-level read/write distinction (unlike GraphQL's Query vs. Mutation), so we
+ * classify by the operation's leading verb and probe only a read-like one — a
+ * default-deny allow-list. An operation whose name also carries a state-changing
+ * verb anywhere (`getAndDeleteUser`) is excluded even if it starts read-like.
+ */
+const SOAP_READ_OP =
+  /^(?:get|find|search|list|read|query|lookup|retrieve|fetch|show|view|load|count|check|describe|resolve|select)/i;
+const SOAP_WRITE_OP =
+  /(?:create|update|delete|destroy|insert|remove|save|\badd\b|\bset\b|modify|edit|drop|upload|register|cancel|reset|disable|enable|execute|transfer|\bpay\b|order|send|submit|login|logout|authenticate|change|write)/i;
+
+/** The string parameters of one operation's request wrapper, in WSDL schema order. */
+function soapStringParams(wsdl: string, op: string): string[] {
+  const safe = op.replace(/[^A-Za-z0-9_]/g, "");
+  if (!safe) return [];
+  // document/literal-wrapped services name the request wrapper after the operation:
+  // a named complexType, or an element with an inline complexType.
+  const byType = new RegExp(
+    `<\\w+:complexType[^>]*name="${safe}"[^>]*>([\\s\\S]*?)</\\w+:complexType>`,
+  );
+  const byElem = new RegExp(`<\\w+:element[^>]*name="${safe}"[^>]*>([\\s\\S]*?)</\\w+:element>`);
+  const block = wsdl.match(byType)?.[1] ?? wsdl.match(byElem)?.[1];
+  if (!block) return [];
+  const params: string[] = [];
+  for (const m of block.matchAll(
+    /<\w+:element[^>]*name="([A-Za-z0-9_]+)"[^>]*type="[^"]*[Ss]tring"/g,
+  )) {
+    if (m[1] && !params.includes(m[1])) params.push(m[1]);
+  }
+  return params;
+}
+
+/** Turn a WSDL document into SOAP (operation, string-param) injection endpoints. */
+function wsdlToProbes(
+  wsdl: string,
+  wsdlUrl: string,
+  origin: string,
+  gate: ScopeGate,
+): ReconEndpoint[] {
+  const namespace = wsdl.match(/targetNamespace="([^"]+)"/)?.[1];
+  if (!namespace) return [];
+  // The service address the binding advertises, if it is on our origin and in
+  // scope; otherwise the WSDL URL stripped of its query (where a `?wsdl` service
+  // answers its SOAP calls). This keeps the POST target reachable and gated.
+  let address = wsdlUrl.split("?")[0] ?? wsdlUrl;
+  const located = wsdl.match(/<\w*:?address[^>]*location="([^"]+)"/)?.[1];
+  if (located) {
+    try {
+      if (new URL(located).origin === origin) address = located;
+    } catch {
+      /* keep the WSDL-derived address */
+    }
+  }
+  if (!gate.check(address).allowed) return [];
+  // Each operation's SOAPAction, from its binding entry (child soap:operation).
+  const actions = new Map<string, string>();
+  for (const m of wsdl.matchAll(
+    /<\w*:?operation[^>]*name="([A-Za-z0-9_]+)"[^>]*>\s*<\w+:operation[^>]*soapAction="([^"]*)"/g,
+  )) {
+    if (m[1] && !actions.has(m[1])) actions.set(m[1], m[2] ?? "");
+  }
+  const operations: string[] = [];
+  for (const m of wsdl.matchAll(/<\w*:?operation[^>]*name="([A-Za-z0-9_]+)"/g)) {
+    if (m[1] && !operations.includes(m[1])) operations.push(m[1]);
+  }
+  const out: ReconEndpoint[] = [];
+  for (const op of operations) {
+    if (out.length >= SOAP_PROBE_LIMIT) break;
+    if (!SOAP_READ_OP.test(op) || SOAP_WRITE_OP.test(op)) continue; // read-only: allow-list
+    const params = soapStringParams(wsdl, op);
+    if (params.length === 0) continue;
+    const soapAction = actions.get(op) ?? "";
+    for (const target of params) {
+      if (out.length >= SOAP_PROBE_LIMIT) break;
+      const fixedParams = params.filter((p) => p !== target).map((p) => ({ name: p, value: "1" }));
+      out.push({
+        url: address,
+        method: "POST",
+        hasParams: true,
+        soap: { operation: op, param: target, namespace, soapAction, fixedParams },
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Discover a SOAP service. Probe the conventional WSDL locations; if one returns a
+ * WSDL document, parse its read-like operations' string parameters into injectable
+ * inputs. Every candidate URL and the resolved service address are gate-checked. A
+ * missing or malformed WSDL yields nothing rather than a throw.
+ */
+async function soapEndpoints(
+  session: Session,
+  gate: ScopeGate,
+  scope: ScopeFile,
+  origin: string,
+): Promise<ReconEndpoint[]> {
+  const candidates = new Set<string>();
+  try {
+    const t = new URL(scope.target);
+    t.search = "wsdl";
+    candidates.add(t.toString());
+  } catch {
+    /* target not a URL — rely on the origin paths below */
+  }
+  for (const p of WSDL_PATHS) candidates.add(origin + p);
+  for (const url of candidates) {
+    if (!gate.check(url).allowed) continue;
+    let body: string;
+    try {
+      const r = await session.request({ url });
+      if (r.status >= 400) continue;
+      body = r.body;
+    } catch {
+      continue;
+    }
+    if (!/<(?:\w+:)?definitions[\s>]/i.test(body) || !/wsdl/i.test(body)) continue;
+    const endpoints = wsdlToProbes(body, url, origin, gate);
     if (endpoints.length > 0) return endpoints;
   }
   return [];

@@ -1,0 +1,10 @@
+target: "http://127.0.0.1:8904/login-1/"
+objective: "Identify and confirm SQL injection and authentication bypass in the login form"
+allow:
+  hosts: ["127.0.0.1"]
+  paths: ["/login-1"]
+deny:
+  paths: ["/config"]
+budgetUsd: 3
+maxSteps: 16
+credentials: []

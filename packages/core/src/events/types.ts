@@ -34,6 +34,11 @@ export interface NightfallEvents {
     decision: "retry" | "escalate" | "abandon" | "pivot";
     note: string;
   };
+  "exploit.adapt": {
+    field: string;
+    candidates: number;
+    confirmed: boolean;
+  };
   "gateway.call": {
     step: StepType;
     model: string;
